@@ -1,0 +1,71 @@
+
+body {
+  font-family: "Helvetica Neue", Helvetica, sans-serif;
+  margin: 1em auto 0em auto;
+  width: 100%;
+  text-align: center;
+}
+
+.background {
+  stroke: black;
+  stroke-width: 2px;
+  fill: white;
+}
+
+.node {
+  stroke: black;
+  stroke-width: 1px;
+  cursor: move;
+  fill: beige;
+}
+
+.core {
+  stroke: black;
+  stroke-width: 1px;
+  cursor: move;
+  fill: #ffffcc;
+}
+
+.synchronizer {
+  stroke: black;
+  stroke-width: 1px;
+  cursor: move;
+  fill: #80b3ff;
+}
+
+.router {
+  stroke: black;
+  stroke-width: 1px;
+  cursor: move;
+  fill: #ffb380;
+}
+
+.link {
+  fill: none;
+  stroke: #000;
+  stroke-width: 3px;
+  opacity: 0.7;
+  marker-end: url(#end-arrow);
+}
+
+.linkinvisible {
+  fill: none;
+  stroke: none;
+}
+
+.label {
+  fill: black;
+  font-family: Verdana;
+  font-size: 16px;
+  text-anchor: middle;
+  cursor: move;
+}
+
+.guideline {
+  stroke: orangered;
+  stroke-width: 4px;
+}
+
+textarea {
+   font-size: 12px;
+}
