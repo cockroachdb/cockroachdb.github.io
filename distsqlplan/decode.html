@@ -50,7 +50,7 @@
     var data = pako.inflate(binData);
 
     // Convert gunzipped byteArray back to ascii string:
-    var strData     = String.fromCharCode.apply(null, new Uint16Array(data));
+    var strData = String.fromCharCode.apply(null, new Uint16Array(data));
 
 
     // This will be imported from a json file.
@@ -118,8 +118,8 @@
                     details: p.inputs[j].details,
                     width: 60,
                     height: 40,
-                    rx: 20,
-                    ry: 20,
+                    rx: 15,
+                    ry: 15,
                     type: "synchronizer"
                 });
             }
@@ -130,8 +130,8 @@
                     details: p.outputs[j].details,
                     width: 60,
                     height: 40,
-                    rx: 20,
-                    ry: 20,
+                    rx: 15,
+                    ry: 15,
                     type: "router"
                 });
             }
@@ -143,8 +143,17 @@
 
             var e = data.edges[i];
             var p1 = data.processors[e.sourceProc];
+            var siblings = 1;
             if (e.sourceOutput) {
                 srcNode = p1.outputs[e.sourceOutput-1].graphNodeIdx;
+                if (p1.outputs[e.sourceOutput-1].title == "by hash") {
+                  for (var j = 0; j < data.edges.length; j++) {
+                    if (i != j && data.edges[j].sourceProc == e.sourceProc &&
+                        data.edges[j].sourceOutput == e.sourceOutput) {
+                      siblings = siblings + 1
+                    }
+                  }
+                }
             } else {
                 srcNode = p1.core.graphNodeIdx;
             }
@@ -154,7 +163,11 @@
             } else {
                 destNode = p2.core.graphNodeIdx;
             }
-            graph.links.push({source: srcNode, target: destNode});
+            var width = 3.0 / siblings;
+            if (width < 1) {
+              width = 1
+            }
+            graph.links.push({source: srcNode, target: destNode, width: width});
         }
 
         // Generate groups.
@@ -248,7 +261,8 @@
         var link = linksLayer.selectAll(".link")
             .data(graph.links.filter(function(d) { return !d.invisible } ))
           .enter().append("line")
-            .attr("class", "link");
+            .attr("class", "link")
+            .style("stroke-width", function(d) { return d.width } );
 
         var margin = 10, pad = 12;
         var node = nodesLayer.selectAll(".node")
@@ -301,7 +315,7 @@
                 d.innerBounds = d.bounds.inflate(- margin);
             });
             link.each(function (d) {
-                d.route = cola.vpsc.makeEdgeBetween(d.source.innerBounds, d.target.innerBounds, 5);
+                d.route = cola.vpsc.makeEdgeBetween(d.source.innerBounds, d.target.innerBounds, 1);
                 if (isIE())  this.parentNode.insertBefore(this, this);
             });
 
