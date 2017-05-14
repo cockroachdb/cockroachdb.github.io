@@ -219,6 +219,17 @@ function init(data) {
         .attr("width", function (d) { return d.width + 2 * pad + 2 * margin; })
         .attr("height", function (d) { return d.height + 2 * pad + 2 * margin; })
         .attr("rx", function (d) { return d.rx; }).attr("ry", function (d) { return d.rx; })
+        .on("mouseover", function() {
+          d3.select(this).style("fill", function(d) {
+            if (d.type == "core") {
+              return "#eedd22";
+            }
+            return "";
+          })
+        })
+        .on("mouseout", function() {
+          d3.select(this).style("fill", "");
+        })
         .call(d3cola.drag);
 
   var label = nodesLayer.selectAll(".label")
@@ -259,6 +270,8 @@ function init(data) {
     .data(graph.groups)
     .enter().append("text")
       .attr("font-size", "15")
+      .attr("cursor", "default")
+      .attr("pointer-events", "none")
       .text(function (d) { return "Node " + d.nodeID });
 
   d3cola.on("tick", function () {

@@ -22,21 +22,18 @@ body {
 .core {
   stroke: black;
   stroke-width: 1px;
-  cursor: move;
   fill: #ffffcc;
 }
 
 .synchronizer {
   stroke: black;
   stroke-width: 1px;
-  cursor: move;
   fill: #80b3ff;
 }
 
 .router {
   stroke: black;
   stroke-width: 1px;
-  cursor: move;
   fill: #ffb380;
 }
 
@@ -58,12 +55,15 @@ body {
   font-family: Verdana;
   font-size: 16px;
   text-anchor: middle;
-  cursor: move;
+  pointer-events: none;
 }
 
 .guideline {
   stroke: orangered;
   stroke-width: 4px;
+}
+
+.group {
 }
 
 textarea {
