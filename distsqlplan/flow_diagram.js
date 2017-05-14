@@ -12,7 +12,7 @@ var d3cola = cola.d3adaptor()
   //.linkDistance(function(link) { return link.distance })
   .jaccardLinkLengths(40,0.7)
   .avoidOverlaps(true)
-  .flowLayout('y', 80)
+  .flowLayout("y", 80)
   .size([width, height]);
 
 var outer = d3.select("body").append("svg")
@@ -20,15 +20,15 @@ var outer = d3.select("body").append("svg")
   .attr("height", height)
   .attr("pointer-events", "all");
 
-outer.append('rect')
-  .attr('class', 'background')
-  .attr('width', "100%")
-  .attr('height', "100%")
+outer.append("rect")
+  .attr("class", "background")
+  .attr("width", "100%")
+  .attr("height", "100%")
   .call(d3.behavior.zoom().on("zoom", redraw));
 
 var vis = outer
-  .append('g')
-  .attr('transform', 'translate(80,80) scale(0.7)');
+  .append("g")
+  .attr("transform", "translate(80,80) scale(0.7)");
 
 function redraw() {
   vis.attr("transform", "translate(" + d3.event.translate + ")" + " scale(" + d3.event.scale + ")");
@@ -183,18 +183,18 @@ function init(data) {
 
   // define arrow markers for graph links
   outer
-    .append('svg:defs')
-    .append('svg:marker')
-      .attr('id', 'end-arrow')
-      .attr('viewBox', '0 -5 10 10')
-      .attr('refX', 5)
-      .attr('markerWidth', 3)
-      .attr('markerHeight', 3)
-      .attr('orient', 'auto')
-    .append('svg:path')
-      .attr('d', 'M0,-5L10,0L0,5L2,0')
-      .attr('stroke-width', '0px')
-      .attr('fill', '#000');
+    .append("svg:defs")
+    .append("svg:marker")
+      .attr("id", "end-arrow")
+      .attr("viewBox", "0 -5 10 10")
+      .attr("refX", 5)
+      .attr("markerWidth", 3)
+      .attr("markerHeight", 3)
+      .attr("orient", "auto")
+    .append("svg:path")
+      .attr("d", "M0,-5L10,0L0,5L2,0")
+      .attr("stroke-width", "0px")
+      .attr("fill", "#000");
 
   var group = groupsLayer.selectAll(".group")
     .data(graph.groups)
@@ -259,9 +259,9 @@ function init(data) {
       size = 4
     }
 
-    el.append('tspan')
+    el.append("tspan")
      .text(d.title)
-     .attr('x', 0).attr('dy', 18+size)
+     .attr("x", 0).attr("dy", 18+size)
      .attr("font-size", 14+size)
      .attr("font-weight", "bold");
 
@@ -269,9 +269,9 @@ function init(data) {
       return
     }
     for (var i = 0; i < d.details.length; i++) {
-      el.append('tspan')
+      el.append("tspan")
         .text(d.details[i])
-        .attr('x', 0).attr('dy', 16+size)
+        .attr("x", 0).attr("dy", 16+size)
         .attr("font-size", 12+size);
     }
   };
@@ -328,7 +328,7 @@ function init(data) {
 }
 
 function isIE() {
-  return ((navigator.appName == 'Microsoft Internet Explorer') ||
-          ((navigator.appName == 'Netscape') &&
+  return ((navigator.appName == "Microsoft Internet Explorer") ||
+          ((navigator.appName == "Netscape") &&
            (new RegExp("Trident/.*rv:([0-9]{1,}[\.0-9]{0,})").exec(navigator.userAgent) != null)));
 }
