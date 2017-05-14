@@ -45,6 +45,7 @@ function init(data) {
   for (var i = 0; i < data.processors.length; i++) {
     var p = data.processors[i];
     p.core.graphNodeIdx = graph.nodes.length
+   
     graph.nodes.push({
       title: p.core.title,
       details: p.core.details,
@@ -52,7 +53,8 @@ function init(data) {
       height: 40,
       rx: 5,
       ry: 5,
-      type: "core"
+      type: "core",
+      stage: p.stage,
     });
     for (var j = 0; j < p.inputs.length; j++) {
       p.inputs[j].graphNodeIdx = graph.nodes.length
@@ -218,17 +220,27 @@ function init(data) {
         .attr("class", function (d) { return d.type })
         .attr("width", function (d) { return d.width + 2 * pad + 2 * margin; })
         .attr("height", function (d) { return d.height + 2 * pad + 2 * margin; })
-        .attr("rx", function (d) { return d.rx; }).attr("ry", function (d) { return d.rx; })
-        .on("mouseover", function() {
-          d3.select(this).style("fill", function(d) {
+        .attr("rx", function (d) { return d.rx; })
+        .attr("ry", function (d) { return d.ry; })
+        .attr("id", function (d) { return "stage" + d.stage; })
+        .on("mouseover", function(d) {
+          var s = d3.select(this);
+          if (d.stage != null && d.stage != 0) {
+            s = d3.selectAll("#stage" + d.stage);
+          }
+          s.style("fill", function(d) {
             if (d.type == "core") {
               return "#eedd22";
             }
             return "";
           })
         })
-        .on("mouseout", function() {
-          d3.select(this).style("fill", "");
+        .on("mouseout", function(d) {
+          var s = d3.select(this);
+          if (d.stage != null && d.stage != 0) {
+            s = d3.selectAll("#stage" + d.stage);
+          }
+          s.style("fill", "");
         })
         .call(d3cola.drag);
 
