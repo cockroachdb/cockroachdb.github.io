@@ -12,7 +12,7 @@ var d3cola = cola.d3adaptor()
   //.linkDistance(function(link) { return link.distance })
   .jaccardLinkLengths(40,0.7)
   .avoidOverlaps(true)
-  .flowLayout('y', 80)
+  .flowLayout("y", 80)
   .size([width, height]);
 
 var outer = d3.select("body").append("svg")
@@ -20,15 +20,15 @@ var outer = d3.select("body").append("svg")
   .attr("height", height)
   .attr("pointer-events", "all");
 
-outer.append('rect')
-  .attr('class', 'background')
-  .attr('width', "100%")
-  .attr('height', "100%")
+outer.append("rect")
+  .attr("class", "background")
+  .attr("width", "100%")
+  .attr("height", "100%")
   .call(d3.behavior.zoom().on("zoom", redraw));
 
 var vis = outer
-  .append('g')
-  .attr('transform', 'translate(80,80) scale(0.7)');
+  .append("g")
+  .attr("transform", "translate(80,80) scale(0.7)");
 
 function redraw() {
   vis.attr("transform", "translate(" + d3.event.translate + ")" + " scale(" + d3.event.scale + ")");
@@ -45,6 +45,7 @@ function init(data) {
   for (var i = 0; i < data.processors.length; i++) {
     var p = data.processors[i];
     p.core.graphNodeIdx = graph.nodes.length
+   
     graph.nodes.push({
       title: p.core.title,
       details: p.core.details,
@@ -52,7 +53,8 @@ function init(data) {
       height: 40,
       rx: 5,
       ry: 5,
-      type: "core"
+      type: "core",
+      stage: p.stage,
     });
     for (var j = 0; j < p.inputs.length; j++) {
       p.inputs[j].graphNodeIdx = graph.nodes.length
@@ -89,10 +91,10 @@ function init(data) {
     var siblings = 1;
     if (e.sourceOutput) {
       srcNode = p1.outputs[e.sourceOutput-1].graphNodeIdx;
-      if (p1.outputs[e.sourceOutput-1].title == "by hash") {
+      if (p1.outputs[e.sourceOutput-1].title === "by hash") {
         for (var j = 0; j < data.edges.length; j++) {
-          if (i != j && data.edges[j].sourceProc == e.sourceProc &&
-              data.edges[j].sourceOutput == e.sourceOutput) {
+          if (i != j && data.edges[j].sourceProc === e.sourceProc &&
+              data.edges[j].sourceOutput === e.sourceOutput) {
             siblings = siblings + 1
           }
         }
@@ -139,7 +141,7 @@ function init(data) {
   graph.constraints = [];
   for (var i = 0; i < data.processors.length; i++) {
     var p = data.processors[i];
-    if (p.inputs.length == 0 && p.outputs.length == 0) {
+    if (p.inputs.length === 0 && p.outputs.length === 0) {
       continue
     }
     var xConstr = {
@@ -181,18 +183,18 @@ function init(data) {
 
   // define arrow markers for graph links
   outer
-    .append('svg:defs')
-    .append('svg:marker')
-      .attr('id', 'end-arrow')
-      .attr('viewBox', '0 -5 10 10')
-      .attr('refX', 5)
-      .attr('markerWidth', 3)
-      .attr('markerHeight', 3)
-      .attr('orient', 'auto')
-    .append('svg:path')
-      .attr('d', 'M0,-5L10,0L0,5L2,0')
-      .attr('stroke-width', '0px')
-      .attr('fill', '#000');
+    .append("svg:defs")
+    .append("svg:marker")
+      .attr("id", "end-arrow")
+      .attr("viewBox", "0 -5 10 10")
+      .attr("refX", 5)
+      .attr("markerWidth", 3)
+      .attr("markerHeight", 3)
+      .attr("orient", "auto")
+    .append("svg:path")
+      .attr("d", "M0,-5L10,0L0,5L2,0")
+      .attr("stroke-width", "0px")
+      .attr("fill", "#000");
 
   var group = groupsLayer.selectAll(".group")
     .data(graph.groups)
@@ -218,7 +220,28 @@ function init(data) {
         .attr("class", function (d) { return d.type })
         .attr("width", function (d) { return d.width + 2 * pad + 2 * margin; })
         .attr("height", function (d) { return d.height + 2 * pad + 2 * margin; })
-        .attr("rx", function (d) { return d.rx; }).attr("ry", function (d) { return d.rx; })
+        .attr("rx", function (d) { return d.rx; })
+        .attr("ry", function (d) { return d.ry; })
+        .attr("id", function (d) { return "stage" + d.stage; })
+        .on("mouseover", function(d) {
+          var s = d3.select(this);
+          if (d.stage != null && d.stage != 0) {
+            s = d3.selectAll("#stage" + d.stage);
+          }
+          s.style("fill", function(d) {
+            if (d.type === "core") {
+              return "#eedd22";
+            }
+            return "";
+          })
+        })
+        .on("mouseout", function(d) {
+          var s = d3.select(this);
+          if (d.stage != null && d.stage != 0) {
+            s = d3.selectAll("#stage" + d.stage);
+          }
+          s.style("fill", "");
+        })
         .call(d3cola.drag);
 
   var label = nodesLayer.selectAll(".label")
@@ -232,13 +255,13 @@ function init(data) {
     var el = d3.select(this);
     el.text("")
     var size = 0
-    if (d.type == "core") {
+    if (d.type === "core") {
       size = 4
     }
 
-    el.append('tspan')
+    el.append("tspan")
      .text(d.title)
-     .attr('x', 0).attr('dy', 18+size)
+     .attr("x", 0).attr("dy", 18+size)
      .attr("font-size", 14+size)
      .attr("font-weight", "bold");
 
@@ -246,9 +269,9 @@ function init(data) {
       return
     }
     for (var i = 0; i < d.details.length; i++) {
-      el.append('tspan')
+      el.append("tspan")
         .text(d.details[i])
-        .attr('x', 0).attr('dy', 16+size)
+        .attr("x", 0).attr("dy", 16+size)
         .attr("font-size", 12+size);
     }
   };
@@ -259,6 +282,8 @@ function init(data) {
     .data(graph.groups)
     .enter().append("text")
       .attr("font-size", "15")
+      .attr("cursor", "default")
+      .attr("pointer-events", "none")
       .text(function (d) { return "Node " + d.nodeID });
 
   d3cola.on("tick", function () {
@@ -303,7 +328,7 @@ function init(data) {
 }
 
 function isIE() {
-  return ((navigator.appName == 'Microsoft Internet Explorer') ||
-          ((navigator.appName == 'Netscape') &&
+  return ((navigator.appName == "Microsoft Internet Explorer") ||
+          ((navigator.appName == "Netscape") &&
            (new RegExp("Trident/.*rv:([0-9]{1,}[\.0-9]{0,})").exec(navigator.userAgent) != null)));
 }
