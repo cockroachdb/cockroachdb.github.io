@@ -91,10 +91,10 @@ function init(data) {
     var siblings = 1;
     if (e.sourceOutput) {
       srcNode = p1.outputs[e.sourceOutput-1].graphNodeIdx;
-      if (p1.outputs[e.sourceOutput-1].title == "by hash") {
+      if (p1.outputs[e.sourceOutput-1].title === "by hash") {
         for (var j = 0; j < data.edges.length; j++) {
-          if (i != j && data.edges[j].sourceProc == e.sourceProc &&
-              data.edges[j].sourceOutput == e.sourceOutput) {
+          if (i != j && data.edges[j].sourceProc === e.sourceProc &&
+              data.edges[j].sourceOutput === e.sourceOutput) {
             siblings = siblings + 1
           }
         }
@@ -141,7 +141,7 @@ function init(data) {
   graph.constraints = [];
   for (var i = 0; i < data.processors.length; i++) {
     var p = data.processors[i];
-    if (p.inputs.length == 0 && p.outputs.length == 0) {
+    if (p.inputs.length === 0 && p.outputs.length === 0) {
       continue
     }
     var xConstr = {
@@ -229,7 +229,7 @@ function init(data) {
             s = d3.selectAll("#stage" + d.stage);
           }
           s.style("fill", function(d) {
-            if (d.type == "core") {
+            if (d.type === "core") {
               return "#eedd22";
             }
             return "";
@@ -255,7 +255,7 @@ function init(data) {
     var el = d3.select(this);
     el.text("")
     var size = 0
-    if (d.type == "core") {
+    if (d.type === "core") {
       size = 4
     }
 
