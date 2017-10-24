@@ -91,7 +91,8 @@ function init(data) {
     var siblings = 1;
     if (e.sourceOutput) {
       srcNode = p1.outputs[e.sourceOutput-1].graphNodeIdx;
-      if (p1.outputs[e.sourceOutput-1].title === "by hash") {
+      var type = p1.outputs[e.sourceOutput-1].title;
+      if (type === "by hash" || type === "by range") {
         for (var j = 0; j < data.edges.length; j++) {
           if (i != j && data.edges[j].sourceProc === e.sourceProc &&
               data.edges[j].sourceOutput === e.sourceOutput) {
