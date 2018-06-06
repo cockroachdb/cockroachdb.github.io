@@ -51,8 +51,8 @@
   // Pako magic
   var data = pako.inflate(binData);
   
-  // Convert gunzipped byteArray back to ascii string:
-  var strData = String.fromCharCode.apply(null, new Uint16Array(data));
+  var strData = new TextDecoder("utf-8").decode(data)
+  // console.log(strData)
   
   var data = JSON.parse(strData);
 </script>
