@@ -1,5 +1,6 @@
 var width = window.innerWidth,
-    height = window.innerHeight;
+    height = window.innerHeight,
+    cursorHeight = 14;
 
 if (width > 60) {
   width = width - 60;
@@ -37,6 +38,10 @@ function redraw() {
 var groupsLayer = vis.append("g");
 var nodesLayer = vis.append("g");
 var linksLayer = vis.append("g");
+
+var tooltip = d3.select("body")
+  .append("div")
+  .attr("class", "tooltip");
 
 var graph = {}, nodeLookup = {};
 
@@ -113,7 +118,7 @@ function init(data) {
     if (width < 1) {
       width = 1
     }
-    graph.links.push({source: srcNode, target: destNode, width: width});
+    graph.links.push({source: srcNode, target: destNode, width: width, stats: e.stats});
   }
 
   // Generate groups.
@@ -212,7 +217,24 @@ function init(data) {
     .enter()
       .append("line")
         .attr("class", "link")
-        .style("stroke-width", function(d) { return d.width } );
+        .style("stroke-width", function(d) { return d.width } )
+        .on("mouseover", function(d) {
+          if (d.stats) {
+            // Make the line thicker and show the edge stats tooltip.
+            d3.select(this)
+              .style("stroke-width", d.width + 4);
+            tooltip
+              .html(d.stats.join("</br>"))
+              .style("left", d3.event.pageX + "px")
+              .style("top", (d3.event.pageY + cursorHeight) + "px")
+              .style("visibility", "visible");
+          }
+        })
+        .on("mouseout", function(d) {
+          d3.select(this)
+            .style("stroke-width", d.width);
+          tooltip.style("visibility", "hidden");
+        });
 
   var margin = 10, pad = 12;
   var node = nodesLayer.selectAll(".node")

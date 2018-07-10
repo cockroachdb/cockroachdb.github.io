@@ -69,3 +69,14 @@ body {
 textarea {
    font-size: 12px;
 }
+
+.tooltip {
+  background: #eeeeee;
+  border-color: black;
+  border-style: solid;
+  border-width: 1px;
+  font-size: 12px;
+  padding: 2px;
+  position: absolute;
+  visibility: hidden;
+}
