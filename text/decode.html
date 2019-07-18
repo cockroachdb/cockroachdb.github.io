@@ -1,0 +1,49 @@
+﻿<!DOCTYPE html>
+
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Text Viewer</title>
+    <style>
+        @import url(style.css);
+    </style>
+</head>
+<body>
+
+<br/>
+
+<pre id="text">
+</pre>
+
+<script src="pako_inflate.min.js"></script>
+
+<script>
+  var hash = window.location.hash;
+  var compressed = window.location.hash;
+  if (window.location.hash.length <= 1) {
+    compressed = window.location.search
+  }
+
+  compressed = compressed.substring(1, compressed.length)
+
+  // Decode base64 (convert ascii to binary).
+  var strData = atob(compressed.replace(/-/g, '+').replace(/_/g, '/'));
+  
+  // Convert binary string to character-number array
+  var charData = strData.split('').map(function(x){return x.charCodeAt(0);});
+  
+  // Turn number array into byte-array
+  var binData = new Uint8Array(charData);
+  
+  // Pako magic
+  var data = pako.inflate(binData);
+  
+  var strData = new TextDecoder("utf-8").decode(data)
+  // console.log(strData)
+  
+  document.getElementById("text").innerHTML=strData
+
+</script>
+
+</body>
+</html>
