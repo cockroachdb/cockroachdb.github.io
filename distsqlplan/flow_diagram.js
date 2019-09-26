@@ -27,20 +27,28 @@ var d3cola = cola.d3adaptor()
 var outer = d3.select("body").append("svg")
   .attr("width", width)
   .attr("height", height)
-  .attr("pointer-events", "all");
+  .attr("pointer-events", "all")
+  .call(d3.behavior.zoom().on("zoom", zoom));
 
 outer.append("rect")
   .attr("class", "background")
   .attr("width", "100%")
-  .attr("height", "100%")
-  .call(d3.behavior.zoom().on("zoom", redraw));
+  .attr("height", "100%");
 
-var vis = outer
-  .append("g")
-  .attr("transform", "translate(80,80) scale(0.7)");
+// These variables will be set in the "tick" handler.
+var initialScale, initialX, initialY;
 
-function redraw() {
-  vis.attr("transform", "translate(" + d3.event.translate + ")" + " scale(" + d3.event.scale + ")");
+var vis = outer.append("g");
+
+// This initial transformation is not important, it only affects the first
+// "frame".
+vis.attr("transform", "translate(80,80) scale(0.7)");
+
+function zoom() {
+  var tx = d3.event.translate[0] + initialX * d3.event.scale;
+  var ty = d3.event.translate[1] + initialY * d3.event.scale;
+  var s = d3.event.scale * initialScale;
+  vis.attr("transform", "translate(" + tx + "," + ty + ") scale(" + s + ")");
 }
 
 var groupsLayer = vis.append("g");
@@ -218,6 +226,7 @@ function init(data) {
         .attr("class", "group")
         .style("fill-opacity", 0.2)
         .style("fill", function (d) { return color(d.nodeID) })
+    	  .on("mousedown.zoom", function () { d3.event.stopPropagation(); })
         .call(d3cola.drag);
 
   var link = linksLayer.selectAll(".link")
@@ -273,6 +282,7 @@ function init(data) {
           }
           s.style("fill", "");
         })
+    	  .on("mousedown.zoom", function () { d3.event.stopPropagation(); })
         .call(d3cola.drag);
 
   var label = nodesLayer.selectAll(".label")
@@ -280,6 +290,7 @@ function init(data) {
     .enter()
     .append("text")
       .attr("class", "label")
+      .on("mousedown.zoom", function () { d3.event.stopPropagation(); })
       .call(d3cola.drag);
 
   var setLabels = function (d) {
@@ -317,6 +328,7 @@ function init(data) {
       .attr("pointer-events", "none")
       .text(function (d) { return "Node " + d.nodeID });
 
+  var frame = 0;
   d3cola.on("tick", function () {
       node.each(function (d) {
         d.innerBounds = d.bounds.inflate(- margin);
@@ -355,6 +367,35 @@ function init(data) {
       label.attr("transform", function (d) {
         return "translate(" + d.x + margin + "," + (d.y + margin - d.height/2) + ")";
       });
+
+      var minX = 10000, minY = 10000, maxX = -10000, maxY = -10000;
+      // On the first "tick" the positions are all wrong (not sure why).
+      frame++;
+      if (frame == 2) {
+        // Get the bounding box to calculate the initial position and
+        // zoom.
+        group.each(function (d) {
+          minX = Math.min(minX, d.bounds.x)
+          minY = Math.min(minY, d.bounds.y)
+          maxX = Math.max(maxX, d.bounds.x + d.bounds.width())
+          maxY = Math.max(maxY, d.bounds.y + d.bounds.height())
+        })
+        // Find the scale at which the diagram fits on either dimension.
+        var scale = window.width / (maxX-minX);
+        scale = Math.min(scale, window.height / (maxY - minY));
+        // Zoom out just a tiny bit more.
+        scale *= 0.95;
+        // This value is a good scale when the diagram is small.
+        if (scale > 0.7) {
+          scale = 0.7
+        }
+        initialScale = scale;
+        // Calculate the delta that would align the center of the diagram with
+        // the center of the window.
+        initialX = window.width / 2 - (maxX + minX) * initialScale / 2;
+        initialY = window.height / 2 - (maxY + minY) * initialScale/ 2;
+        vis.attr("transform", "translate(" + initialX + "," + initialY + ") scale(" + initialScale + ")");
+      }
   });
 }
 
