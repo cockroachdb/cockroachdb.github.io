@@ -1,13 +1,20 @@
-var width = window.innerWidth,
-    height = window.innerHeight,
-    cursorHeight = 14;
+const cursorHeight = 14;
 
-if (width > 60) {
-  width = width - 60;
+var width, height, hMargin = 60, vMargin = 50;
+
+function initWidthHeight() {
+  width = window.innerWidth;
+  height = window.innerHeight
+
+  if (width > hMargin) {
+    width = width - hMargin;
+  }
+  if (height > vMargin) {
+    height = height - vMargin;
+  }
 }
-if (height > 50) {
-  height = height - 50;
-}
+
+initWidthHeight();
 
 var d3cola = cola.d3adaptor()
   //.linkDistance(function(link) { return link.distance })
@@ -15,6 +22,7 @@ var d3cola = cola.d3adaptor()
   .avoidOverlaps(true)
   .flowLayout("y", 80)
   .size([width, height]);
+
 
 var outer = d3.select("body").append("svg")
   .attr("width", width)
@@ -355,3 +363,11 @@ function isIE() {
           ((navigator.appName == "Netscape") &&
            (new RegExp("Trident/.*rv:([0-9]{1,}[\.0-9]{0,})").exec(navigator.userAgent) != null)));
 }
+
+function resize() {
+  initWidthHeight();
+  d3cola.size([width, height]);
+  outer.attr("width", width).attr("height", height);
+}
+
+window.addEventListener("resize", resize);

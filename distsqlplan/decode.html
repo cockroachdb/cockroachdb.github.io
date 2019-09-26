@@ -60,11 +60,13 @@ Drag to pan or move nodes.
     button.addEventListener("click", function() {
       this.classList.toggle("active");
       if (text.style.display === "block") {
-        d3.select('svg').attr("height", height);
+        vMargin -= 120;
+        resize();
         button.innerHTML = "Show SQL";
         text.style.display = "none";
       } else {
-        d3.select('svg').attr("height", height - 120);
+        vMargin += 120;
+        resize();
         button.innerHTML = "Hide SQL";
         text.style.display = "block";
       }
