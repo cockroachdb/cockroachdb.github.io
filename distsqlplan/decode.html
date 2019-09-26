@@ -24,27 +24,52 @@
 
   compressed = compressed.substring(1, compressed.length)
 
-  
   // Decode base64 (convert ascii to binary).
   var strData = atob(compressed.replace(/-/g, '+').replace(/_/g, '/'));
-  
+
   // Convert binary string to character-number array
   var charData = strData.split('').map(function(x){return x.charCodeAt(0);});
-  
+
   // Turn number array into byte-array
   var binData = new Uint8Array(charData);
-  
+
   // Pako magic
   var data = pako.inflate(binData);
-  
+
   var strData = new TextDecoder("utf-8").decode(data)
   // console.log(strData)
-  
+
   var data = JSON.parse(strData);
 </script>
 
 <br/>
 Scroll up/down on the empty background to scale.
 Drag to pan or move nodes.
+<button type="button" id="sqlbutton" class="sqlbutton">Show SQL</button>
+<textarea class="sqltext" id="sqltext" readonly rows=8 wrap=soft></textarea>
+
+<script>
+  if (data.sql) {
+    var button = document.getElementById("sqlbutton");
+    var text = document.getElementById("sqltext");
+
+    // Show the button and set up a listener that opens or closes the textarea.
+    button.style.display = "inline";
+    text.value = data.sql;
+
+    button.addEventListener("click", function() {
+      this.classList.toggle("active");
+      if (text.style.display === "block") {
+        d3.select('svg').attr("height", height);
+        button.innerHTML = "Show SQL";
+        text.style.display = "none";
+      } else {
+        d3.select('svg').attr("height", height - 120);
+        button.innerHTML = "Hide SQL";
+        text.style.display = "block";
+      }
+    });
+  }
+</script>
 </body>
 </html>
