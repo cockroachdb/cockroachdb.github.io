@@ -180,7 +180,10 @@ function init(data) {
     for (var j = 0; j < p.inputs.length; j++) {
       var n = p.inputs[j].graphNodeIdx;
       xConstr.offsets.push({node: n, offset: hSpacing * (2*j+1-p.inputs.length)});
-      yConstr.offsets.push({node: n, offset: -vSpacing});
+      // The vertical offset for input synchronizers should be proportional to
+      // the number of lines inside of the input synchronizer's box so that it
+      // would not run onto the box for the processor core.
+      yConstr.offsets.push({node: n, offset: -vSpacing - 8*(p.inputs[j].details.length)});
       // These edges are not visible, but they help with the layout.
       graph.links.push({source: n, target: p.core.graphNodeIdx, invisible: true});
     }
