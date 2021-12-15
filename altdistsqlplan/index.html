@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<!--
+    Copyright 2021 The Cockroach Authors.
+
+   Use of this software is governed
+   by the Apache License, Version 2.0, included in the file "LICENSE"
+-->
+
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <script src="js/pako_inflate.min.js"></script>
+    <script src="js/d3.v7.min.js"></script>
+    <script src="js/d3-dag.iife.min.js"></script>
+    <script src="js/hnmr.js"></script>
+    <script src="js/sql-formatter.min.js"></script>
+    <script src="js/crdb.viewer.v0.js"></script>
+   
+    <link rel="stylesheet" href="css/w3.css"><!-- -->
+    </link>
+    <link rel="stylesheet" href="css/w3theme.css"><!-- -->
+    </link>
+    <link rel="stylesheet" href="css/style.css"><!-- -->
+    </link>
+    <title>Alt DistSQL Plan Viewer</title>
+</head>
+
+
+
+
+
+
+<body onload="crdb_init('#dag','#tooltip', '#stats', '#sql', '#plan')">
+    <div class="w3-container w3-padding w3-theme-l2">
+        <div class="w3-bar w3-theme">
+            <button id="plan_view_button" class="w3-bar-item w3-button" onclick="crdb_view('#plan_view')">Plan</button>
+            <button id="table_view_button"class="w3-bar-item w3-button" onclick="crdb_view('#table_view')">Heatmap</button>
+            <button id="graph_view_button"class="w3-bar-item w3-button" onclick="crdb_view('#graph_view')">Graph</button>
+            <button id="sql_view_button"class="w3-bar-item w3-button" onclick="crdb_view('#sql_view')">SQL</button>
+            <button id="help_view_button" class="w3-bar-item w3-button" onclick="crdb_view('#help_view')">Help</button>
+        </div>
+        <div id="wrapper" class="w3-container w3-theme-l5 full-height">
+            <div id="plan_view" class="w3-container w3-margin-top view" style="display:none" >
+                <textarea id="plan"></textarea>
+                <p>
+                    <button onclick="crdb_refresh('#dag','#tooltip', '#stats', '#sql', '#plan')">Refresh & Display Heatmap</button>
+                </p>
+            </div>
+            <div id="sql_view" class="w3-container view" style="display:none">
+                <div id="sql">
+                </div>
+            </div>
+            <div id="table_view" class="w3-container view w3-margin-bottom" style="display:none">
+                <div class="w3-bar w3-margin-top w3-border-bottom w3-border-deep-purple">
+                    Processors
+                </div>
+                <div id="stats_processors">
+                </div>
+                
+                <div class="w3-bar w3-margin-top w3-border-bottom w3-border-deep-purple ">
+                    Links
+                </div>
+                <div id="stats_edges">
+                </div>
+                <div class="w3-tiny w3-margin-top">
+                    <div>Note:</div>
+                    <ul>
+                        <li>Columns are sortable. </li>
+                        <li>Selecting a processor id will highlight the processor on the graph view.</li>
+                    </ul>
+                </div>
+            </div>
+            <div id="graph_view" class="w3-container view" style="display:none">
+                <div id="dag"> </div>
+                <div id="tooltip"></div>
+            </div>
+           
+            <div id="help_view" class="w3-container view" style="display:none">
+                <h1>Alternative DistSQL Plan Viewer</h1>
+                <p>
+                    The plan viewer has different views: 
+                    <ul>
+                        <li>Heatmap: a table that lists all the processors and edges with relative metrics.Each column is sortable.
+                            <p>One or more IDs in the table may be selected, when switching to the graph view, the IDs (processors and links) are highlighted.</p>
+
+                        </li>
+                        <li>Graph: A direct acyclic graph that shows how the various processors are used to execute the query
+                            <p>Hovering on the "Processor Name" will show additional details</p>
+                            <p>Hovering on the links will show additional details, if available</p>
+                            <p>Clicking on the "Node Name" will highlight all the processors running on the same node</p>
+                        </li>
+                        <li>SQL: The original SQL Query</li>
+                        <li>Plan: The plan in JSON Format</li>
+                    </ul>
+                    
+                
+                </p>
+            </div>
+        </div>
+    </div>
+</body>
+
+</html>

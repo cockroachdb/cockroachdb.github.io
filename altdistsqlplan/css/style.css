@@ -1,0 +1,101 @@
+body {
+    padding: 0; 
+    margin: 0;
+    height: 100%;
+ }
+
+
+  
+.full-height {
+    height: 100%;
+  }
+
+.edge {
+    fill: none;
+}
+
+.node {
+    font-size: 10pt;
+}
+
+
+#tooltip   {
+    opacity: 0;
+    padding: 5px;
+    max-width: 1000px;
+    position: absolute;			
+    text-align: left;			
+    overflow: hidden;				
+    font-size: 9px;
+    font-family: monospace;
+    background:white;	
+    border-radius: 10px;		
+    pointer-events: none;	
+    z-index: 5;
+    box-shadow: 2px 2px 4px rgba(0, 0, 0, 0.25);
+}
+
+.tooltip {
+  font-family: Arial, Helvetica, sans-serif;
+  border-collapse: collapse;
+  
+}
+
+.tooltip td {
+  border: 1px solid #578ca9;
+  padding: 2px;
+}
+
+#stats {
+    padding: 5px;
+}
+#dag {
+    overflow: auto;
+    max-width: 100%;
+  }
+  
+#wrapper {
+  width: 100%;
+  margin: 0;
+}
+
+
+.details {
+    font-family: Arial, Helvetica, sans-serif;
+    border-collapse: collapse;
+  }
+  
+.details td {
+    border: 1px solid #ddd;
+    padding: 8px;
+    width: 76px;
+  }
+  
+.details tr:nth-child(even){background-color: #f2f2f2;}
+  
+.details tr:hover {background-color: #578ca9;}
+  
+.details th {
+    padding-top: 12px;
+    padding-bottom: 12px;
+    text-align: left;
+    height: 200px;
+    white-space: nowrap;
+    vertical-align: bottom;
+}
+
+
+  
+.details th > div {
+    transform: 
+      translate(60px, 0px)
+      rotate(315deg);
+    width: 40px;
+}
+.details th > div > span {
+    border-bottom: 1px solid #ccc;
+    padding: 5px 10px;
+}
+
+
+
