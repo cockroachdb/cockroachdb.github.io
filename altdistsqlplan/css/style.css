@@ -4,8 +4,6 @@ body {
     height: 100%;
  }
 
-
-  
 .full-height {
     height: 100%;
   }
@@ -17,7 +15,6 @@ body {
 .node {
     font-size: 10pt;
 }
-
 
 #tooltip   {
     opacity: 0;
@@ -49,16 +46,16 @@ body {
 #stats {
     padding: 5px;
 }
+
 #dag {
     overflow: auto;
     max-width: 100%;
-  }
+}
   
 #wrapper {
   width: 100%;
   margin: 0;
 }
-
 
 .details {
     font-family: Arial, Helvetica, sans-serif;
@@ -84,8 +81,6 @@ body {
     vertical-align: bottom;
 }
 
-
-  
 .details th > div {
     transform: 
       translate(60px, 0px)
@@ -96,6 +91,3 @@ body {
     border-bottom: 1px solid #ccc;
     padding: 5px 10px;
 }
-
-
-
