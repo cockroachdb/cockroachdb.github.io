@@ -512,7 +512,7 @@ function crdb_displayDetails(core) {
   x = 6
   width = 10
   metrics = crdb_extractMetrics(core.details)
-  var container = d3.create("svg:g").attr("width", 100)
+  var container = d3.create("svg:g").style("width", 100)
   var i = 0;
   var padding = 1
 
@@ -847,5 +847,5 @@ function crdb_refresh(wrapper, tooltip, table, sql, plan) {
 }
 
 function crdb_redirect() {
-  window.open("https://cockroachdb.github.io/distsqlplan/decode.html" + window.location.hash, "_self")
+  window.open("/distsqlplan/decode.html" + window.location.hash, "_self")
 }

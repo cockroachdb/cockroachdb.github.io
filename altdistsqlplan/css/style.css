@@ -16,6 +16,13 @@ body {
     font-size: 10pt;
 }
 
+#table_view {
+  overflow: hidden;	
+}
+
+#plan {
+  width: 100%!important;
+}
 #tooltip   {
     opacity: 0;
     padding: 5px;
