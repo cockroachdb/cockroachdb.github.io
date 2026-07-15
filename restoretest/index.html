@@ -132,6 +132,13 @@ body.hide-p99 .tbl [data-metric="p99"]{display:none}
         drag-to-zoom selection, copy link, analysis summary, file picker ---- */
 .ctrl .unzoom{display:none;margin-left:auto}
 body.zoomed .ctrl .unzoom{display:inline-block}
+/* Share: offload the (immutable) report data to the link store and copy a short
+   ref link. Right-aligned; the label doubles as status (sharing…/copied/failed). */
+.ctrl .sharebtn{margin-left:auto}
+.ctrl .unzoom+.sharebtn{margin-left:8px}   /* when reset-zoom is shown, sit beside it */
+.ctrl .sharebtn.busy{opacity:0.6;cursor:default}
+.ctrl .sharebtn.ok{color:var(--good);border-color:var(--good)}
+.ctrl .sharebtn.err{color:var(--bad);border-color:var(--bad)}
 svg .selrect{fill:var(--ink2);opacity:0.12}
 .picker{max-width:640px;margin:8vh auto 0}
 .picker h1{font-size:22px;font-weight:660;margin:0 0 6px}
@@ -1560,6 +1567,8 @@ function render_body(ctx){
   // Reset the zoomed time window; shown only while zoomed (body.zoomed) — same as
   // double-clicking a plot.
   A.push("<button class='unzoom' data-unzoom title='reset zoom' aria-label='reset zoom'>⤢</button>");
+  // Share: upload the report data and copy a short link (see the bootstrap script).
+  A.push("<button class='sharebtn' data-share title='copy a short shareable link'>share</button>");
   A.push("</div>");
 
   // Restore Progress shows whenever there's download data (single-arm too, not just
@@ -2561,20 +2570,78 @@ function __runChart(){
  // Sticky control defaults; the slug stores only the diff so an unchanged view stays clean.
  var CTRL_DEFAULTS={p50:true,p95:false,p99:true,qps:true,scale:'linear',xmode:'elapsed',plot:'avg',armMode:'both'};
  var CTRL={};   // current non-default control overrides
+ // Once the report data has been shared, REF is its id in the link store. When set,
+ // persistHash writes a small {ref,sel,ctrl} slug instead of inlining the heavy arms, so
+ // the URL stays short while control tweaks (sel/ctrl) keep updating it live. Any edit to
+ // the catalog itself (removeArm / compare) clears REF, falling back to inline arms.
+ var REF=null;
  // Called from the chart's sync() with the live control state: diff against defaults and
  // re-persist. __CTRL0__ carries the latest overrides so an arm re-render re-seeds them.
  window.__PERSIST_CTRL__=function(state){
    var d={}; for(var k in CTRL_DEFAULTS){ if(state[k]!==CTRL_DEFAULTS[k]) d[k]=state[k]; }
    CTRL=d; window.__CTRL0__=d; persistHash();
  };
+ // Returns a promise for the written slug (the share button uses it to build the link).
  function persistHash(){
-   if(!CATALOG || !CATALOG.length) return;
-   var payload={arms:CATALOG, sel:SEL};
+   if(!CATALOG || !CATALOG.length) return Promise.resolve(null);
+   var payload = REF ? {ref:REF} : {arms:CATALOG};
+   payload.sel=SEL;
    if(CTRL && Object.keys(CTRL).length) payload.ctrl=CTRL;
-   encodePayload(payload).then(function(slug){
+   return encodePayload(payload).then(function(slug){
      try{ history.replaceState(null,'','#'+slug); }catch(e){}
-   }).catch(function(){});
+     return slug;
+   }).catch(function(){ return null; });
  }
+
+ // ---- Share: offload the immutable report data (the arm CATALOG) to a Google Sheet via
+ // a small Apps Script, and put only its short id in the URL. Reading is anonymous; only
+ // sharing hits the network. See artifacts/../roachtest-perf-links for the backend. ----
+ var SHARE_URL='https://script.google.com/macros/s/AKfycbyyB1ygZlTQ2WtLQAIBFdggiIsVrzQ8gL980CLYjiQ7koFQHip9-M3jCB9CY3JdW-uP/exec';
+ var LOADERR=null;   // set when a shared report fails to load; surfaced by the picker
+ function copyLink(t){
+   if(navigator.clipboard&&navigator.clipboard.writeText) return navigator.clipboard.writeText(t);
+   return new Promise(function(res,rej){ var ta=document.createElement('textarea');
+     ta.value=t; ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta);
+     ta.focus(); ta.select(); try{document.execCommand('copy');res();}catch(e){rej(e);}
+     finally{document.body.removeChild(ta);} });
+ }
+ // POST as text/plain to stay a CORS "simple request" — Apps Script can't answer a
+ // preflight. `detail` is the gzip+base64url arm payload (the same encoding decodePayload
+ // already understands); the store validates that it decodes to a catalog before keeping it.
+ async function uploadCatalog(){
+   var detail=await encodePayload(CATALOG);
+   var res=await fetch(SHARE_URL,{method:'POST',
+     headers:{'Content-Type':'text/plain;charset=utf-8'},
+     body:JSON.stringify({detail:detail})});
+   var out=await res.json();
+   if(out.error) throw new Error(out.error);
+   return out.id;
+ }
+ async function fetchCatalog(id){
+   var res=await fetch(SHARE_URL+'?id='+encodeURIComponent(id));
+   var out=await res.json();
+   if(out.error) throw new Error(out.error);
+   return decodePayload(out.detail);   // gzip+base64url -> arms array
+ }
+ document.addEventListener('click',function(e){
+   var b=e.target.closest&&e.target.closest('[data-share]'); if(!b)return;
+   e.preventDefault();
+   if(b.classList.contains('busy') || !CATALOG || !CATALOG.length) return;
+   b.classList.remove('ok','err'); b.classList.add('busy'); b.textContent='creating short link…';
+   uploadCatalog().then(function(id){
+     REF=id; return persistHash();                       // rewrite hash as {ref,sel,ctrl}
+   }).then(function(slug){
+     if(!slug) throw new Error('failed to encode link');
+     return copyLink(location.origin+location.pathname+'#'+slug);
+   }).then(function(){
+     b.classList.remove('busy'); b.classList.add('ok'); b.textContent='link copied ✓';
+     setTimeout(function(){ b.classList.remove('ok'); b.textContent='share'; },2200);
+   }).catch(function(err){
+     console.error('share failed:',err);
+     b.classList.remove('busy'); b.classList.add('err'); b.textContent='share failed';
+     setTimeout(function(){ b.classList.remove('err'); b.textContent='share'; },2600);
+   });
+ });
 
  // ---- run-trace hover (plot = all): hovering one run's line bolds that run across every
  // chart and dims the rest. Delegated once here (not in __runChart, which re-runs every
@@ -2729,6 +2796,7 @@ function __runChart(){
  function removeArm(i){
    if(!CATALOG || i<0 || i>=CATALOG.length) return;
    CATALOG.splice(i,1);
+   REF=null;   // catalog changed -> any prior share id is stale; re-inline until re-shared
    SEL=SEL.map(function(s){ return s==null?null : s===i?null : (s>i?s-1:s); });
    renderView();
  }
@@ -2770,6 +2838,7 @@ function __runChart(){
    var b=Object.assign({},pasted[0]);
    var nm=labelArms([a,b]); a.label=nm[0]; b.label=nm[1];
    var combined=[a,b];
+   REF=null;   // a compared pair is new data, not the shared blob
    try{ location.hash=b64urlEncode(JSON.stringify(combined)); }catch(err){}
    renderReport(combined);
  }
@@ -2873,6 +2942,7 @@ function __runChart(){
      +"</div>";
    var a=document.getElementById('armA'),b=document.getElementById('armB'),
        go=document.getElementById('go'),err=document.getElementById('err');
+   if(LOADERR){ err.textContent=LOADERR; LOADERR=null; }
    function upd(){go.disabled=!(a.files&&a.files.length);}
    a.addEventListener('change',upd);b.addEventListener('change',upd);
    go.addEventListener('click',function(){
@@ -2886,6 +2956,13 @@ function __runChart(){
    });
  }
 
+ // A placeholder shown while a shared report's data is fetched from the link store, so
+ // the recipient sees progress instead of a blank page during the Apps Script read.
+ function showLoading(msg){
+   document.body.className='';
+   document.body.innerHTML="<div class='picker'><h1>online restore perf breakdown</h1>"
+     +"<p>"+esc(msg)+"</p></div>";
+ }
  async function resolveAndRender(){
    // Priority: (1) injected window.__ARMS__ -> (2) URL hash -> (3) file picker. The
    // payload is either a bare arm array (launcher / roachtest) or {arms, sel} once the
@@ -2895,6 +2972,15 @@ function __runChart(){
    else if(location.hash && location.hash.length>1){
      try{ raw=await decodePayload(location.hash.slice(1)); }
      catch(e){ /* bad/partial payload -> fall through to picker */ }
+   }
+   // A shared link carries only {ref,sel,ctrl}: the heavy arms live in the link store,
+   // so fetch them by id before rendering. REF is remembered so later control tweaks
+   // re-persist as a short ref rather than re-inlining the whole catalog.
+   if(raw && !Array.isArray(raw) && raw.ref && !(raw.arms && raw.arms.length)){
+     showLoading('Looking up report…');
+     try{ raw=Object.assign({}, raw, {arms:await fetchCatalog(raw.ref)}); REF=raw.ref; }
+     catch(e){ console.error('could not load shared report',raw.ref,e);
+       LOADERR='Could not load shared report “'+raw.ref+'” — it may have been deleted, or the network is unavailable.'; }
    }
    var norm = Array.isArray(raw) ? {arms:raw, sel:null}
             : (raw && Array.isArray(raw.arms) ? raw : null);
