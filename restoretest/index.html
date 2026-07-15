@@ -36,7 +36,6 @@ body{font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink
 .ctrl button.on{background:var(--ink);color:var(--surface);border-color:var(--ink)}
 .ctrl .plotsel{font:inherit;font-size:13px;font-weight:600;color:var(--ink2);background:var(--page);
  border:1px solid var(--border);border-radius:8px;padding:4px 8px;cursor:pointer}
-body.zoomed svg .scrubhit{cursor:zoom-out}   /* click anywhere to reset the zoom */
 /* Segmented control: buttons within a .seg read as one connected switch. */
 .ctrl .seg{display:inline-flex}
 .ctrl .seg button{border-radius:0;border-left-width:0}
@@ -64,6 +63,15 @@ svg .dlcurve{fill:none;stroke:var(--muted);stroke-width:1.5;stroke-dasharray:4 3
 svg .dlband{fill:var(--muted);opacity:0.08;stroke:none}   /* download %: min-max spread */
 svg .dldiam{stroke:var(--surface);stroke-width:0.6}       /* 30/60/90% download markers */
 svg .rln{fill:none;stroke-width:1;opacity:0.28;stroke-linejoin:round}  /* ensemble: per-run line */
+/* Hovering one run's line (via the fat transparent hit-path) bolds that run across every
+   chart and dims the rest, so a single run can be traced through all plots. */
+svg .rlnhit{fill:none;stroke:transparent;stroke-width:8;pointer-events:stroke;cursor:pointer}
+.runtip{position:fixed;pointer-events:none;z-index:50;display:none;white-space:nowrap;
+ font-size:11px;font-weight:600;padding:2px 7px;border-radius:6px;
+ background:var(--ink);color:var(--surface);box-shadow:0 1px 4px rgba(0,0,0,0.25)}
+body.runhi svg .rln{opacity:0.07}
+body.runhi svg .ln{opacity:0.12}                 /* dim the mean line too while tracing a run */
+body.runhi svg .rln.hon{opacity:1;stroke-width:2}
 svg .dlrun{stroke-width:1;opacity:0.35}                    /* ensemble: per-run download curve */
 svg .msline{stroke:var(--muted);stroke-width:1;opacity:0.5;stroke-dasharray:2 2}   /* download milestone (grey) */
 svg .mslab{fill:var(--muted);font-size:6px;font-weight:600;font-family:system-ui,sans-serif}
@@ -122,8 +130,8 @@ body.hide-p99 .tbl [data-metric="p99"]{display:none}
 
 /* ---- additions not in the Python (client-side ingestion + share/zoom UI):
         drag-to-zoom selection, copy link, analysis summary, file picker ---- */
-.ctrl .copylink{margin-left:auto}
-.ctrl .copylink.copied{background:var(--good);border-color:var(--good);color:#fff}
+.ctrl .unzoom{display:none;margin-left:auto}
+body.zoomed .ctrl .unzoom{display:inline-block}
 svg .selrect{fill:var(--ink2);opacity:0.12}
 .picker{max-width:640px;margin:8vh auto 0}
 .picker h1{font-size:22px;font-weight:660;margin:0 0 6px}
@@ -137,16 +145,27 @@ svg .selrect{fill:var(--ink2);opacity:0.12}
 .picker .err{color:var(--bad);font-size:13px;margin-top:10px;white-space:pre-wrap}
 /* arm catalog picker: shown when >1 arm is bundled; pick 1 to view or 2 to compare. */
 .armbar{display:flex;flex-wrap:wrap;align-items:stretch;gap:8px;margin:0 0 14px}
-.armchip{display:flex;flex-direction:column;align-items:flex-start;gap:1px;cursor:pointer;
- font:inherit;text-align:left;padding:6px 11px;border-radius:10px;
+.armchip{position:relative;display:flex;font:inherit;text-align:left;border-radius:10px;
  border:1px solid var(--border);background:var(--page);color:var(--ink2)}
-.armchip .armname{font-size:13px;font-weight:640;color:var(--ink)}
+.armchip .armpick{display:flex;flex-direction:column;align-items:flex-start;gap:1px;
+ cursor:pointer;padding:6px 11px}
+.armchip .armnameline{white-space:nowrap}   /* date + time stay on one line */
+.armchip .armdate{font-size:13px;font-weight:500;color:var(--ink2)}
+.armchip .armname{font-size:13px;font-weight:700;color:var(--ink)}
 .armchip .armsub{font-size:10.5px;color:var(--muted)}
+/* Per-chip remove: a small round × in the top-right corner, revealed on hover; drops the
+   arm from the catalog and the shareable slug. */
+.armchip .armx{position:absolute;top:3px;right:3px;width:14px;height:14px;border-radius:50%;
+ display:flex;align-items:center;justify-content:center;font-size:11px;line-height:1;
+ cursor:pointer;color:var(--muted);background:var(--surface);opacity:0;transition:opacity .1s}
+.armchip:hover .armx{opacity:0.85}
+.armchip .armx:hover{opacity:1;background:var(--bad);color:#fff}
 /* Chosen arms are shaded in their comparison color (A=ctl, B=exp); once both are
    chosen the rest dim, so it's visually clear one must be un-picked first. */
 .armchip.selA{background:color-mix(in srgb,var(--ctl-p99) 22%,var(--page));box-shadow:inset 0 0 0 1px var(--ctl-p99)}
 .armchip.selB{background:color-mix(in srgb,var(--lh-p99) 22%,var(--page));box-shadow:inset 0 0 0 1px var(--lh-p99)}
-.armchip.dim{opacity:0.3;cursor:default}
+.armchip.dim{opacity:0.3}
+.armchip.dim .armpick{cursor:default}
 .armempty{color:var(--muted);font-size:13px;margin:24px 2px}
 /* A solo arm renders positionally as ctl (orange). When the survivor of a comparison
    is the slot-B arm, remap the ctl palette to the exp (blue) one so its color stays
@@ -422,8 +441,23 @@ function qps_weighted_agg(lat, qps){
 // — the steady-state tail after 100%). The report emits only the real ops; the "agg"
 // op (Overall Workload Latency) is derived here as the per-sample QPS-weighted mean.
 // Values are already whole-ms latencies and 0.1%-resolution download.
+// Rebuild row-format {download:[[...]],samples:{op:[[...]]}} from a v:2 columnar run (the
+// encoder transposes rows->columns so gzip compresses better; we transpose back on ingest
+// so the rest of parse_run is unchanged). Row-format runs (no v) pass through as-is.
+function _rows_from_columnar(run){
+  function rows(cols){
+    if (!Array.isArray(cols) || !cols.length || !Array.isArray(cols[0])) return [];
+    var n = cols[0].length, out = [];
+    for (var i=0;i<n;i++){ var r=[]; for (var c=0;c<cols.length;c++) r.push(cols[c][i]); out.push(r); }
+    return out;
+  }
+  var sm = run.samples || {}, s = {};
+  for (var op in sm) s[op] = rows(sm[op]);
+  return {download: rows(run.download || []), samples: s};
+}
 function parse_run(run){
   if (!run || typeof run !== "object" || Array.isArray(run)) return [];
+  if (run.v === 2) run = _rows_from_columnar(run);
   var opMap = (run.samples && typeof run.samples === "object") ? run.samples : {};
   var byT = {};   // elapsed(sec) -> sample
   for (var op in opMap){
@@ -1521,9 +1555,11 @@ function render_body(ctx){
   }
   if (dual){
     // Single cycling control: A+B -> A -> B -> A+B (can't turn both off).
-    A.push("<span class='cl'>arms</span><button class='armcycle' data-armcycle>"+esc(cl)+" + "+esc(el)+"</button>");
+    A.push("<span class='cl'>View</span><button class='armcycle' data-armcycle>"+esc(cl)+" v "+esc(el)+"</button>");
   }
-  A.push("<button class='copylink' data-copylink>copy link</button>");
+  // Reset the zoomed time window; shown only while zoomed (body.zoomed) — same as
+  // double-clicking a plot.
+  A.push("<button class='unzoom' data-unzoom title='reset zoom' aria-label='reset zoom'>⤢</button>");
   A.push("</div>");
 
   // Restore Progress shows whenever there's download data (single-arm too, not just
@@ -1709,6 +1745,11 @@ function __runChart(){
  var state={p50:true,p95:false,p99:true,qps:true,scale:'linear',xmode:'elapsed',plot:'avg',
             solo:null,   // null = summary/all runs (per the plot dropdown); a number = show only that run (latency + its download)
             range:{start:0,end:XMAX},armMode:'both'};   // arms: 'both' | 'A' | 'B'
+ // Seed the sticky controls from a persisted slug (window.__CTRL0__ holds only non-default
+ // overrides). Re-applied on every __runChart run so control state survives arm re-renders.
+ if(window.__CTRL0__) for(var _ck in window.__CTRL0__){ if(_ck in state) state[_ck]=window.__CTRL0__[_ck]; }
+ // Called by the control handlers to push the current sticky state up to the slug.
+ function persistCtrl(){ if(window.__PERSIST_CTRL__) window.__PERSIST_CTRL__(state); }
  function armOn(a){return a==='ctl' ? state.armMode!=='B' : state.armMode!=='A';}
  // Shared synced-cursor registry: op -> {x0,x1,xmin,xmax,yt,yb, gridX, head(cxv),
  // series:[{at(cxv)->value, y(value)->px, color, fmt(value)->str}]}. Every chart
@@ -1808,7 +1849,7 @@ function __runChart(){
      return yb-((v-ymin)/(ymax-ymin))*(yb-yt);
    }
    function Y2(pct){return yb-(pct/100)*(yb-yt);}  // right axis, 0..100%
-   var s=[];
+   var s=[], hits=[];   // hits: fat transparent run hit-paths, appended last (topmost)
    s.push('<svg viewBox="0 0 '+W+' '+H+'" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-label="latency for '+op+'">');
    var ticks=[];
    if(log){var pp=Math.floor(Math.log10(ymin));while(true){var b=Math.pow(10,pp);
@@ -1925,26 +1966,30 @@ function __runChart(){
        var d=c.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Y(p.y).toFixed(1);}).join(' ');
        s.push('<path class="ln" style="stroke:var('+VAR[k]+')" d="'+d+'"/>');});
    } else {
-     if(state.plot==='avg'){
-       // Graduated ±σ band (SHELLS): nested translucent fills overlapping toward the
-       // mean so the center reads densest and the edge fades out by ~1σ — a spread cue
-       // that (unlike a min/max envelope) can't imply latency reached 0. The y-scale
-       // is already sized to mean±1σ, so 1σ fits.
-       keys.forEach(function(k){var pts=FS[k]||[];if(pts.length<2)return;
-         SHELLS.forEach(function(sh){var kk=sh[0],op=sh[1];
-           var top=[],bot=[];
-           pts.forEach(function(p){top.push([X(p.x),Y(p.m+kk*p.s)]);bot.push([X(p.x),Y(Math.max(p.m-kk*p.s,ymin))]);});
-           var poly=top.concat(bot.reverse()).map(function(a){return a[0].toFixed(1)+','+a[1].toFixed(1);}).join(' ');
-           s.push('<polygon points="'+poly+'" style="fill:var('+VAR[k]+');opacity:'+op+'"/>');});});
-     } else if(state.plot==='all'){
-       keys.forEach(function(k){var rs=(runsMap&&runsMap[k])||[];
-         rs.forEach(function(pl){var c=clipPts(pl, xmin, xmax);if(c.length<2)return;
-           var d=c.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Y(p.y).toFixed(1);}).join(' ');
-           s.push('<path class="rln" style="stroke:var('+VAR[k]+')" d="'+d+'"/>');});});
-     }
+     // Graduated ±σ band (SHELLS): nested translucent fills overlapping toward the mean
+     // so the center reads densest and the edge fades out by ~1σ — a spread cue that
+     // (unlike a min/max envelope) can't imply latency reached 0. Shown in BOTH summary
+     // and all-runs modes (the spread is useful context either way).
      keys.forEach(function(k){var pts=FS[k]||[];if(pts.length<2)return;
-       var d=pts.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Y(p.m).toFixed(1);}).join(' ');
-       s.push('<path class="ln" style="stroke:var('+VAR[k]+')" d="'+d+'"/>');});
+       SHELLS.forEach(function(sh){var kk=sh[0],op=sh[1];
+         var top=[],bot=[];
+         pts.forEach(function(p){top.push([X(p.x),Y(p.m+kk*p.s)]);bot.push([X(p.x),Y(Math.max(p.m-kk*p.s,ymin))]);});
+         var poly=top.concat(bot.reverse()).map(function(a){return a[0].toFixed(1)+','+a[1].toFixed(1);}).join(' ');
+         s.push('<polygon points="'+poly+'" style="fill:var('+VAR[k]+');opacity:'+op+'"/>');});});
+     if(state.plot==='all'){
+       // All-runs: the individual run lines ARE the point, so draw them and skip the mean
+       // line (the shells already convey the aggregate).
+       keys.forEach(function(k){var rs=(runsMap&&runsMap[k])||[], arm=k.slice(0,3);
+         rs.forEach(function(pl,ri){var c=clipPts(pl, xmin, xmax);if(c.length<2)return;
+           var d=c.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Y(p.y).toFixed(1);}).join(' ');
+           var key=arm+'#'+ri;   // arm + run index: same run tagged the same across all charts
+           s.push('<path class="rln" data-run="'+key+'" style="stroke:var('+VAR[k]+')" d="'+d+'"/>');
+           hits.push('<path class="rlnhit" data-run="'+key+'" d="'+d+'"/>');});});
+     } else {
+       keys.forEach(function(k){var pts=FS[k]||[];if(pts.length<2)return;   // summary: mean line
+         var d=pts.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Y(p.m).toFixed(1);}).join(' ');
+         s.push('<path class="ln" style="stroke:var('+VAR[k]+')" d="'+d+'"/>');});
+     }
    }
    // QPS overlay (toggle): a dashed line per arm in its color, on its own scale (not
    // ms). In A/B the right axis is free, so qps gets labeled ticks there; single-arm's
@@ -1966,12 +2011,20 @@ function __runChart(){
          var qtx=x1+32;
          s.push('<text class="axtitle" transform="rotate(-90 '+qtx+' '+((yt+yb)/2)+')" x="'+qtx+'" y="'+((yt+yb)/2)+'" text-anchor="middle">qps</text>');
        }
-       ARMS.forEach(function(a){ if(!armOn(a))return; var arr=qPick(a); if(!arr||!arr.length)return;
-         var c=clipPts(arr.map(function(p){return {x:p.x,y:qval(p)};}), xmin, xmax); if(c.length<2)return;
-         var col=a==='ctl'?'var(--ctl-p95)':'var(--lh-p95)';
-         s.push('<path class="qpsln" style="stroke:'+col+'" d="'+c.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Yq(p.y).toFixed(1);}).join(' ')+'"/>');
-         var lp=c[c.length-1], ly=Math.min(Math.max(Yq(lp.y),yt+6),yb-4);
-         s.push('<text class="endlab" x="'+(X(lp.x)-2).toFixed(1)+'" y="'+(ly-2).toFixed(1)+'" text-anchor="end" style="fill:'+col+'">qps</text>');
+       ARMS.forEach(function(a){ if(!armOn(a))return; var col=a==='ctl'?'var(--ctl-p95)':'var(--lh-p95)';
+         var drawq=function(arr,key){ if(!arr||!arr.length)return null;
+           var c=clipPts(arr.map(function(p){return {x:p.x,y:qval(p)};}), xmin, xmax); if(c.length<2)return null;
+           var d=c.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Yq(p.y).toFixed(1);}).join(' ');
+           s.push('<path class="qpsln'+(key!=null?' rln':'')+'"'+(key!=null?' data-run="'+key+'"':'')+' style="stroke:'+col+'" d="'+d+'"/>');
+           if(key!=null) hits.push('<path class="rlnhit" data-run="'+key+'" d="'+d+'"/>');
+           return c; };
+         if(state.plot==='all'){   // per-run qps lines (no mean line), tagged for run-hover
+           (qRuns(a)||[]).forEach(function(pl,ri){ drawq(pl, a+'#'+ri); });
+         } else {
+           var c=drawq(qPick(a), null);
+           if(c){ var lp=c[c.length-1], ly=Math.min(Math.max(Yq(lp.y),yt+6),yb-4);
+             s.push('<text class="endlab" x="'+(X(lp.x)-2).toFixed(1)+'" y="'+(ly-2).toFixed(1)+'" text-anchor="end" style="fill:'+col+'">qps</text>'); }
+         }
        });
      }
    }
@@ -2011,10 +2064,11 @@ function __runChart(){
      ARMS.forEach(function(a){if(!ep[a])return;
        s.push('<text class="endlab" x="'+(ep[a][0]+4).toFixed(1)+'" y="'+(ep[a][1]+2).toFixed(1)+'" style="fill:var('+VAR[a+'_p99']+')">'+(LAB[a]||a)+' p99</text>');});}
    // Synced-cursor hit area + empty layer the mousemove handler fills (no rebuild).
-   s.push('<rect class="scrubhit" x="'+x0+'" y="'+yt+'" width="'+(x1-x0)+'" height="'+(yb-yt)+'" fill="transparent" pointer-events="all" '+
+   s.push('<rect class="scrubhit" x="0" y="0" width="'+W+'" height="'+H+'" fill="transparent" pointer-events="all" '+
      'data-op="'+op+'" data-x0="'+x0+'" data-x1="'+x1+'" data-xmin="'+xmin+'" data-xmax="'+xmax+'" data-yt="'+yt+'" data-yb="'+yb+'" '+
      'data-ymin="'+ymin+'" data-ymax="'+ymax+'" data-log="'+(log?1:0)+'" data-qtop="'+(qtop||0)+'"/>');
    s.push('<g class="cursorlayer" data-op="'+op+'"></g>');
+   if(hits.length) s.push(hits.join(''));   // run hit-paths on top so hover reaches them
    s.push('</svg>');
    return s.join('');
  }
@@ -2051,7 +2105,7 @@ function __runChart(){
    var diamond=function(cx,cy,color){var r=3.4;
      s.push('<polygon class="dldiam" points="'+cx.toFixed(1)+','+(cy-r).toFixed(1)+' '+(cx+r).toFixed(1)+','+cy.toFixed(1)
        +' '+cx.toFixed(1)+','+(cy+r).toFixed(1)+' '+(cx-r).toFixed(1)+','+cy.toFixed(1)+'" style="fill:'+color+'"/>');};
-   var s=[];
+   var s=[], hits=[];   // hits: fat transparent run hit-paths, appended last (topmost)
    s.push('<svg viewBox="0 0 '+W+' '+H+'" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-label="download progress">');
    var xmin,xmax,X,Y,curve,band,drawArm,xTitle,yTitle,xticks;
    if(elapsed){
@@ -2083,9 +2137,11 @@ function __runChart(){
        for(var ev=Math.ceil(xmin/es)*es;ev<=xmax+1e-9;ev+=es){
          if(!full&&(Math.abs(ev-xmin)<es*0.5||Math.abs(ev-xmax)<es*0.5))continue; xt(ev);}
        if(!full){xt(xmin);xt(xmax);}};
-     curve=function(c,color,cls){var cc=clipPts(cut100(c),xmin,xmax);
+     curve=function(c,color,cls,key){var cc=clipPts(cut100(c),xmin,xmax);
        var d=cc.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+dY(p).toFixed(1);}).join(' ');
-       if(cc.length>=2) s.push('<path class="'+(cls||'ln')+'" style="stroke:'+color+'" d="'+d+'"/>');};
+       if(cc.length<2)return; var run=(cls==='rln'&&key!=null)?' data-run="'+key+'"':'';
+       s.push('<path class="'+(cls||'ln')+'"'+run+' style="stroke:'+color+'" d="'+d+'"/>');
+       if(cls==='rln'&&key!=null) hits.push('<path class="rlnhit" data-run="'+key+'" d="'+d+'"/>');};
      band=function(c,color){var cc=clipPts(cut100(c),xmin,xmax); if(cc.length<2)return;
        SHELLS.forEach(function(sh){var f=sh[0],op=sh[1];
          var top=cc.map(function(p){return [X(p.x),Y(cl(p.y+f*(p.hi-p.y)))];});
@@ -2095,8 +2151,9 @@ function __runChart(){
      var inWin=function(v){return v>=xmin-1e-9 && v<=xmax+1e-9;};
      drawArm=function(a){var runs=meta.dlRuns[a]||[], nr=runs.length, mean=meta.dl[a]||[];
        if(state.solo!=null){ if(runs[state.solo]) curve(runs[state.solo],colOf[a]); }
-       else if(state.plot==='all'){ runs.forEach(function(pl){curve(pl,colOf[a],'rln');
-         if(nr>1){var rc=crossEl(pl,100); if(rc!=null&&inWin(rc)) diamond(X(rc),Y(100),colOf[a]);}}); if(mean.length>=2)curve(mean,colOf[a]); }
+       else if(state.plot==='all'){ if(mean.length>=2)band(mean,colOf[a]);   // shells, no mean line
+         runs.forEach(function(pl,ri){curve(pl,colOf[a],'rln',a+'#'+ri);
+         if(nr>1){var rc=crossEl(pl,100); if(rc!=null&&inWin(rc)) diamond(X(rc),Y(100),colOf[a]);}}); }
        else { if(mean.length>=2){band(mean,colOf[a]);curve(mean,colOf[a]);
          var ce=meanComplete(a); if(ce!=null&&inWin(ce)){var xc=X(ce);
            // Mean completion (mean of the runs' 100% crossings): dimmed dashed vertical +
@@ -2125,8 +2182,10 @@ function __runChart(){
      xticks=function(){[0,20,40,60,80,100].forEach(function(pc){var x=X(pc);
        s.push('<line class="grid" x1="'+x.toFixed(1)+'" y1="'+yt+'" x2="'+x.toFixed(1)+'" y2="'+yb+'" opacity="0.5"/>');
        s.push('<text class="xtick" x="'+x.toFixed(1)+'" y="'+(yb+9)+'" text-anchor="middle">'+pc+'%</text>');});};
-     curve=function(c,color,cls){var d=c.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Y(p.y).toFixed(1);}).join(' ');
-       if(c.length>=2) s.push('<path class="'+(cls||'ln')+'" style="stroke:'+color+'" d="'+d+'"/>');};
+     curve=function(c,color,cls,key){var d=c.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Y(p.y).toFixed(1);}).join(' ');
+       if(c.length<2)return; var run=(cls==='rln'&&key!=null)?' data-run="'+key+'"':'';
+       s.push('<path class="'+(cls||'ln')+'"'+run+' style="stroke:'+color+'" d="'+d+'"/>');
+       if(cls==='rln'&&key!=null) hits.push('<path class="rlnhit" data-run="'+key+'" d="'+d+'"/>');};
      band=function(c,color){SHELLS.forEach(function(sh){var f=sh[0],op=sh[1];
        var top=c.map(function(p){return [X(p.x),Y(p.y+f*(p.hi-p.y))];});
        var bot=c.map(function(p){return [X(p.x),Y(p.y-f*(p.y-p.lo))];});
@@ -2135,8 +2194,9 @@ function __runChart(){
      // 100% completion is at x=100 (right edge), y = each run's finish time.
      drawArm=function(a){var runs=meta.epRuns[a]||[], nr=runs.length, mean=meta.ep[a]||[];
        if(state.solo!=null){ if(runs[state.solo]) curve(runs[state.solo],colOf[a]); }
-       else if(state.plot==='all'){ runs.forEach(function(pl){curve(pl,colOf[a],'rln');
-         if(nr>1){var lp=pl[pl.length-1]; if(lp) diamond(X(lp.x),Y(lp.y),colOf[a]);}}); if(mean.length>=2)curve(mean,colOf[a]); }
+       else if(state.plot==='all'){ if(mean.length>=2)band(mean,colOf[a]);   // shells, no mean line
+         runs.forEach(function(pl,ri){curve(pl,colOf[a],'rln',a+'#'+ri);
+         if(nr>1){var lp=pl[pl.length-1]; if(lp) diamond(X(lp.x),Y(lp.y),colOf[a]);}}); }
        else { if(mean.length>=2){band(mean,colOf[a]);curve(mean,colOf[a]);
          if(multi){var mlp=mean[mean.length-1]; if(mlp) diamond(X(mlp.x),Y(mlp.y),colOf[a]);}} }
        if(mean.length){var lp=mean[mean.length-1]; var ly=Math.min(Math.max(Y(lp.y),yt+6),yb-4);
@@ -2167,15 +2227,24 @@ function __runChart(){
      for(var mv=0;mv<=mtop+1e-9;mv+=mstep)
        s.push('<text class="y2tick" x="'+(x1+4)+'" y="'+(Ymb(mv)+2).toFixed(1)+'" text-anchor="start">'+Math.round(mv)+'</text>');
      s.push('<text class="axtitle" transform="rotate(-90 '+(x1+30)+' '+((yt+yb)/2)+')" x="'+(x1+30)+'" y="'+((yt+yb)/2)+'" text-anchor="middle">'+mbTitle+'</text>');
-     ARMS.forEach(function(a){ if(!armOn(a))return; var col=colOf[a];
-       if(state.solo!=null){ var pl=(mRuns(a)||[])[state.solo]; if(pl){var cc=clipPts(pl,xmin,xmax); if(cc.length>=2)
-         s.push('<path class="mbln" style="stroke:'+col+'" d="'+cc.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Ymb(pn(p.y)).toFixed(1);}).join(' ')+'"/>'); } }
-       else { var mean=mMean(a); if(mean&&mean.length>=2){ var cc=clipPts(mean,xmin,xmax);
+     // Throughput uses the lighter (p50) arm shade so it reads distinctly from the
+     // %-downloaded band/line (which uses the p95 shade), like p50 vs p99 on latency.
+     ARMS.forEach(function(a){ if(!armOn(a))return; var col=(a==='ctl'?'var(--ctl-p50)':'var(--lh-p50)');
+       var runLine=function(pl,key){ var cc=clipPts(pl,xmin,xmax); if(cc.length<2)return;
+         var d=cc.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Ymb(pn(p.y)).toFixed(1);}).join(' ');
+         s.push('<path class="mbln'+(key!=null?' rln':'')+'"'+(key!=null?' data-run="'+key+'"':'')+' style="stroke:'+col+'" d="'+d+'"/>');
+         if(key!=null) hits.push('<path class="rlnhit" data-run="'+key+'" d="'+d+'"/>'); };
+       var band2=function(mean){ var cc=clipPts(mean,xmin,xmax); if(cc.length<2)return null;
          SHELLS.forEach(function(sh){var f=sh[0],op2=sh[1];
            var top=cc.map(function(p){return [X(p.x),Ymb(Math.max(0,pn(p.m+f*p.s)))];});
            var bot=cc.map(function(p){return [X(p.x),Ymb(Math.max(0,pn(p.m-f*p.s)))];});
            s.push('<polygon class="dlband" points="'+top.concat(bot.reverse()).map(function(q){return q[0].toFixed(1)+','+q[1].toFixed(1);}).join(' ')+'" style="fill:'+col+';opacity:'+op2+'"/>');});
-         s.push('<path class="mbln" style="stroke:'+col+'" d="'+cc.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Ymb(pn(p.m)).toFixed(1);}).join(' ')+'"/>'); } }
+         return cc; };
+       if(state.solo!=null){ var pl=(mRuns(a)||[])[state.solo]; if(pl) runLine(pl,null); }
+       else if(state.plot==='all'){ var mn=mMean(a); if(mn&&mn.length>=2) band2(mn);   // shells, no mean line
+         (mRuns(a)||[]).forEach(function(pl,ri){ runLine(pl, a+'#'+ri); }); }
+       else { var mn=mMean(a); var cc=band2(mn); if(cc)
+         s.push('<path class="mbln" style="stroke:'+col+'" d="'+cc.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Ymb(pn(p.m)).toFixed(1);}).join(' ')+'"/>'); }
      });
    }
    // Register the download chart with the shared cursor: %downloaded (or elapsed-to-%
@@ -2209,9 +2278,10 @@ function __runChart(){
          return h; }};
    })();
    // Drag-to-zoom / click-to-cycle hit area; the shared cursor draws into the layer.
-   s.push('<rect class="scrubhit" x="'+x0+'" y="'+yt+'" width="'+(x1-x0)+'" height="'+(yb-yt)+'" fill="transparent" pointer-events="all" '+
+   s.push('<rect class="scrubhit" x="0" y="0" width="'+W+'" height="'+H+'" fill="transparent" pointer-events="all" '+
      'data-op="__dl__" data-x0="'+x0+'" data-x1="'+x1+'" data-xmin="'+xmin+'" data-xmax="'+xmax+'" data-yt="'+yt+'" data-yb="'+yb+'"/>');
    s.push('<g class="cursorlayer" data-op="__dl__"></g>');
+   if(hits.length) s.push(hits.join(''));   // run hit-paths on top so hover reaches them
    s.push('</svg>');
    host.innerHTML=s.join('');
  }
@@ -2261,11 +2331,12 @@ function __runChart(){
    if(ac){ var e=function(t){return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};
      var cA='<span style="color:var(--ctl-p95)">'+e(LAB.ctl)+'</span>';
      var cB='<span style="color:var(--lh-p95)">'+e(LAB.exp)+'</span>';
-     ac.innerHTML = state.armMode==='both' ? (cA+' + '+cB) : state.armMode==='A' ? cA : cB; }
+     ac.innerHTML = state.armMode==='both' ? (cA+' v '+cB) : state.armMode==='A' ? cA : cB; }
    rebuildPlotOptions();
    var qb=document.querySelector('[data-qps]'); if(qb) qb.classList.toggle('on',state.qps);
    PMETS.forEach(function(m){document.body.classList.toggle('hide-'+m,!state[m]);});
    syncRange();
+   persistCtrl();   // control changes funnel through sync() -> keep the slug's ctrl in step
  }
  document.addEventListener('change',function(e){
    var ps=e.target.closest&&e.target.closest('[data-plotsel]');if(!ps)return;
@@ -2314,16 +2385,35 @@ function __runChart(){
      var px=c.x0+((cxv-c.xmin)/(c.xmax-c.xmin))*(c.x1-c.x0);
      layer.appendChild(mk('line',{'class':'scrub',x1:px.toFixed(1),y1:c.yt,x2:px.toFixed(1),y2:c.yb}));
      var hd=c.head&&c.head(cxv);
-     if(hd){var ht=mk('text',{'class':'curhead',x:px.toFixed(1),y:(c.yt-1),'text-anchor':'middle'},hd);ht.style.fontSize=(6*fs).toFixed(1)+'px';layer.appendChild(ht);}
+     if(hd){var ht=mk('text',{'class':'curhead',x:px.toFixed(1),y:(c.yt-4),'text-anchor':'middle'},hd);ht.style.fontSize=(6*fs).toFixed(1)+'px';layer.appendChild(ht);}
+     var placed=[];   // label boxes already drawn, so close ones can be nudged aside
      for(var si=0;si<c.series.length;si++){ var sp=c.series[si]; var v=sp.at(cxv);
        if(v==null||isNaN(v))continue; var py=sp.y(v); if(py==null||isNaN(py))continue;
        var dot=mk('circle',{'class':'curdot',r:r.toFixed(2),cx:px.toFixed(1),cy:py.toFixed(1)}); dot.style.fill=sp.color; layer.appendChild(dot);
-       var lab=mk('text',{'class':'curlab',x:(px+r+1).toFixed(1),y:(py-2).toFixed(1)}, sp.fmt(v)); lab.style.fill=sp.color; lab.style.fontSize=(6.5*fs).toFixed(1)+'px'; layer.appendChild(lab);
+       var txt=sp.fmt(v), fsz=6.5*fs, w=txt.length*fsz*0.58, lx=px+r+1, ly=py-2;
+       // If a value sits near the very top, keep its label inside the plot so it doesn't
+       // land on a plot's own top label; otherwise place it just above the dot.
+       if(ly < c.yt+3) ly = py + fsz + 1;
+       // Nudge right if it would overlap a label already placed at this x (close values).
+       for(var pi=0;pi<placed.length;pi++){ var pl=placed[pi];
+         if(Math.abs(pl.y-ly)<fsz && lx<pl.x+pl.w && lx+w>pl.x){ lx=pl.x+pl.w+2*fs; } }
+       placed.push({x:lx,y:ly,w:w});
+       var lab=mk('text',{'class':'curlab',x:lx.toFixed(1),y:ly.toFixed(1)}, txt); lab.style.fill=sp.color; lab.style.fontSize=fsz.toFixed(1)+'px'; layer.appendChild(lab);
      }
    }
  }
  // ---- Drag-to-zoom (elapsed mode only): drag a horizontal band to set range ----
- var drag=null;
+ var drag=null, clickTimer=null;
+ function resetZoom(){ if(!isFull()){ state.range.start=0; state.range.end=XMAX; syncRange(); redraw(); } }
+ // A plain click on the plot cycles what's shown: a single run -> back to all runs; else
+ // cycle the arm(s) shown. (Per-run focus is done by hovering a run's line; double-click
+ // resets the time window.)
+ function cycleView(){
+   if(state.solo!=null){ state.solo=null; state.plot='all'; state.armMode='both'; }
+   else if(window.__DUAL__){ state.armMode = state.armMode==='both'?'A':state.armMode==='A'?'B':'both'; }
+   else return;
+   sync(); redraw(); refreshTables();
+ }
  function hitToElapsed(hit,e){
    var x0=+hit.getAttribute('data-x0'),x1=+hit.getAttribute('data-x1'),xmin=+hit.getAttribute('data-xmin'),xmax=+hit.getAttribute('data-xmax');
    var svg=hit.ownerSVGElement,r=svg.getBoundingClientRect();
@@ -2383,12 +2473,18 @@ function __runChart(){
      var a=Math.min(d.startXv,d.curXv), b=Math.max(d.startXv,d.curXv);
      if(b-a>=CAD){state.range.start=a;state.range.end=b;syncRange();redraw();}
    } else if(!d.moved){                                           // plain click (no drag)
-     if(!isFull()){ state.range.start=0; state.range.end=XMAX; syncRange(); redraw(); }  // un-zoom
-     else if(window.__DUAL__){                                    // nothing to un-zoom -> cycle the arm shown
-       state.armMode = state.armMode==='both' ? 'A' : state.armMode==='A' ? 'B' : 'both';
-       sync(); redraw(); refreshTables();
-     }
+     // Defer so a double-click (reset zoom) can cancel the single-click cycle.
+     clearTimeout(clickTimer); clickTimer=setTimeout(cycleView,220);
    }
+ });
+ // Double-click anywhere on the plot resets the zoomed time window.
+ document.addEventListener('dblclick',function(e){
+   if(!(e.target.closest&&e.target.closest('.scrubhit')))return;
+   clearTimeout(clickTimer); resetZoom();
+ });
+ // Control-bar "reset zoom" button (shown only while zoomed).
+ document.addEventListener('click',function(e){
+   if(e.target.closest&&e.target.closest('[data-unzoom]')) resetZoom();
  });
  document.addEventListener('mouseout',function(e){
    if(drag)return;
@@ -2405,14 +2501,6 @@ function __runChart(){
    var el=e.target.closest?e.target.closest('[data-copy]'):null;if(!el)return;
    copyText(el.getAttribute('data-copy'));
    el.classList.add('copied');setTimeout(function(){el.classList.remove('copied');},900);
- });
- document.addEventListener('click',function(e){
-   var b=e.target.closest&&e.target.closest('[data-copylink]');if(!b)return;
-   var enc=window.__ENCODE_ARMS__&&window.__ENCODE_ARMS__();
-   if(!enc){b.textContent='no data';setTimeout(function(){b.textContent='copy link';},1200);return;}
-   var url=location.origin+location.pathname+'#'+enc;
-   copyText(url);b.classList.add('copied');var t=b.textContent;b.textContent='copied!';
-   setTimeout(function(){b.classList.remove('copied');b.textContent=t;},1100);
  });
  sync();redraw();
 })();
@@ -2458,6 +2546,69 @@ function __runChart(){
    try{ if(!window.__ARMS__)return null; return b64urlEncode(JSON.stringify(window.__ARMS__)); }
    catch(e){ return null; }
  };
+ // gzip+base64url encoder (mirror of decodePayload), for re-encoding the live catalog +
+ // selection into the URL. Async because CompressionStream is stream-based.
+ async function encodePayload(obj){
+   var bytes=new TextEncoder().encode(JSON.stringify(obj));
+   var stream=new Blob([bytes]).stream().pipeThrough(new CompressionStream('gzip'));
+   var buf=new Uint8Array(await new Response(stream).arrayBuffer());
+   var bin=''; for(var i=0;i<buf.length;i++) bin+=String.fromCharCode(buf[i]);
+   return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+ }
+ // Keep the URL fragment in sync with the live catalog + selection so the current view
+ // (including X-outs and which arms are picked) is shareable and survives a reload.
+ // replaceState avoids history spam and can throw on some file:// browsers -> best effort.
+ // Sticky control defaults; the slug stores only the diff so an unchanged view stays clean.
+ var CTRL_DEFAULTS={p50:true,p95:false,p99:true,qps:true,scale:'linear',xmode:'elapsed',plot:'avg',armMode:'both'};
+ var CTRL={};   // current non-default control overrides
+ // Called from the chart's sync() with the live control state: diff against defaults and
+ // re-persist. __CTRL0__ carries the latest overrides so an arm re-render re-seeds them.
+ window.__PERSIST_CTRL__=function(state){
+   var d={}; for(var k in CTRL_DEFAULTS){ if(state[k]!==CTRL_DEFAULTS[k]) d[k]=state[k]; }
+   CTRL=d; window.__CTRL0__=d; persistHash();
+ };
+ function persistHash(){
+   if(!CATALOG || !CATALOG.length) return;
+   var payload={arms:CATALOG, sel:SEL};
+   if(CTRL && Object.keys(CTRL).length) payload.ctrl=CTRL;
+   encodePayload(payload).then(function(slug){
+     try{ history.replaceState(null,'','#'+slug); }catch(e){}
+   }).catch(function(){});
+ }
+
+ // ---- run-trace hover (plot = all): hovering one run's line bolds that run across every
+ // chart and dims the rest. Delegated once here (not in __runChart, which re-runs every
+ // render); the fat transparent .rlnhit paths are the hover targets.
+ var runtip=null;
+ function runTipEl(){ if(!runtip){ runtip=document.createElement('div'); runtip.className='runtip'; document.body.appendChild(runtip); } return runtip; }
+ // "run N" (with the arm name when comparing) from the data-run key "<arm>#<idx>".
+ function runLabel(key){ var p=key.split('#'), L=window.__LABELS__||{};
+   return (window.__DUAL__ ? ((L[p[0]]||p[0])+' · ') : '') + 'run '+((+p[1])+1); }
+ function posTip(e){ if(!runtip || runtip.style.display==='none') return;
+   var x=e.clientX+12; if(x>window.innerWidth-90) x=e.clientX-runtip.offsetWidth-12;
+   runtip.style.left=x+'px'; runtip.style.top=(e.clientY+12)+'px'; }
+ function highlightRun(key,e){
+   document.body.classList.add('runhi');
+   var ps=document.querySelectorAll('.rln');
+   for(var i=0;i<ps.length;i++) ps[i].classList.toggle('hon', ps[i].getAttribute('data-run')===key);
+   var t=runTipEl(); t.textContent=runLabel(key); t.style.display='block'; posTip(e);
+ }
+ function clearRunHi(){
+   document.body.classList.remove('runhi');
+   var ps=document.querySelectorAll('.rln.hon');
+   for(var i=0;i<ps.length;i++) ps[i].classList.remove('hon');
+   if(runtip) runtip.style.display='none';
+ }
+ document.addEventListener('mouseover',function(e){
+   var h=e.target.closest&&e.target.closest('[data-run]'); if(h) highlightRun(h.getAttribute('data-run'),e);
+ });
+ document.addEventListener('mousemove',function(e){ if(runtip && runtip.style.display!=='none') posTip(e); });
+ document.addEventListener('mouseout',function(e){
+   var h=e.target.closest&&e.target.closest('[data-run]'); if(!h) return;
+   var to=e.relatedTarget&&e.relatedTarget.closest?e.relatedTarget.closest('[data-run]'):null;
+   if(to && to.getAttribute('data-run')===h.getAttribute('data-run')) return;   // moved within same run
+   clearRunHi();
+ });
 
  // ---- arm catalog (any number of arms) + selector (pick 1 to view, 2 to compare) ----
  // The injected/hash payload is a CATALOG of all bundled arms. The rendering path only
@@ -2497,15 +2648,21 @@ function __runChart(){
    for(var i=0;i<cands.length;i++){ if(uniq(cands[i])) return cands[i]; }
    return gen('hms',true).map(function(s,i){return s+'#'+(i+1);});  // last resort
  }
- // Average observed run duration (max elapsed sample across download + per-op samples),
- // shown per arm in the picker.
+ // Average per-run duration (mean over the arm's runs of each run's max elapsed sample).
+ // Elapsed is column 0 in the v:2 columnar format; row[0] per row in the legacy layout.
  function armDurAvg(a){
    if(!a||!a.runs||!a.runs.length) return null;
    var tot=0,n=0;
    a.runs.forEach(function(r){
+     if(!r) return;
      var mx=0;
-     if(r&&r.download) r.download.forEach(function(row){ if(row[0]>mx)mx=row[0]; });
-     if(r&&r.samples) for(var op in r.samples) r.samples[op].forEach(function(row){ if(row[0]>mx)mx=row[0]; });
+     var scan=function(series){
+       if(!Array.isArray(series)||!series.length) return;
+       if(r.v===2){ var el=series[0]; if(Array.isArray(el)) for(var i=0;i<el.length;i++){ if(el[i]>mx)mx=el[i]; } }
+       else { for(var j=0;j<series.length;j++){ var row=series[j]; if(row&&row[0]>mx)mx=row[0]; } }
+     };
+     scan(r.download);
+     if(r.samples) for(var op in r.samples) scan(r.samples[op]);
      if(mx>0){ tot+=mx; n++; }
    });
    return n?tot/n:null;
@@ -2529,14 +2686,22 @@ function __runChart(){
    var chips=CATALOG.map(function(a,i){
      var role=(SEL[0]===i?0:SEL[1]===i?1:-1), dim=(bothFull&&role<0);
      var cls='armchip'+(role>=0?(' sel sel'+(role===0?'A':'B')):'')+(dim?' dim':'');
-     var sub=[]; var d=armDurAvg(a); if(d!=null) sub.push(fmtDur(d));
+     // Bold the arm's short (report) name; when it doesn't already carry the date (a
+     // same-day catalog shows just the time), prefix the date as lighter context.
+     var date=armTsFields(a).date, short=names[i], nameHtml;
+     if(short.indexOf(date)===0) nameHtml='<b class="armname">'+esc(short)+'</b>';
+     else nameHtml='<span class="armdate">'+esc(date)+'</span> <b class="armname">'+esc(short)+'</b>';
+     var sub=[]; var d=armDurAvg(a), cnt=a.runs?a.runs.length:0;
+     sub.push(cnt+'x'+(d!=null?' '+fmtDur(d):''));   // e.g. "5x 6m32s" (count x avg duration)
      if(a.sha) sub.push(a.sha.slice(0,8));
      var sk=a.settings?Object.keys(a.settings):[];
      if(sk.length) sub.push(sk.length===1?sk[0].split('.').pop():sk.length+' settings');
-     return '<button class="'+cls+'" data-armchip="'+i+'" type="button"'+(dim?' aria-disabled="true"':'')+'>'
-       +'<span class="armname">'+esc(names[i])+'</span>'
-       +(sub.length?'<span class="armsub">'+esc(sub.join(' · '))+'</span>':'')
-       +'</button>';
+     return '<div class="'+cls+'" data-armidx="'+i+'">'
+       +'<span class="armpick" data-armpick="'+i+'"'+(dim?' aria-disabled="true"':'')+'>'
+       +'<span class="armnameline">'+nameHtml+'</span>'
+       +'<span class="armsub">'+esc(sub.join(' · '))+'</span></span>'
+       +'<span class="armx" data-armremove="'+i+'" title="remove from catalog">×</span>'
+       +'</div>';
    }).join('');
    return '<div class="armbar" data-armbar>'+chips+'</div>';
  }
@@ -2544,7 +2709,10 @@ function __runChart(){
  // document.body, so the bar must be prepended after each render). With nothing picked
  // we clear the report and show just the picker.
  function renderView(){
-   if(SEL[0]==null && SEL[1]==null){
+   if(CATALOG && CATALOG.length===1){       // nothing to pick — just show the lone arm
+     SEL=[0,null];
+     renderReport(armsForSelection());
+   } else if(SEL[0]==null && SEL[1]==null){
      document.body.className='';
      document.body.innerHTML='<p class="armempty">Nothing selected — pick an arm to view, or two to compare.</p>';
    } else {
@@ -2554,16 +2722,27 @@ function __runChart(){
    }
    var bar=armBarHTML();
    if(bar) document.body.insertAdjacentHTML('afterbegin', bar);
+   persistHash();                           // keep the URL in sync with catalog + selection
  }
- // Chip click: fill the first empty slot; clicking a selected chip un-picks it (down to
- // an empty selection). With both slots full the other chips are greyed — you must
+ // Remove an arm from the catalog (and the shareable slug), reindexing the slot pair so
+ // the surviving selection stays put.
+ function removeArm(i){
+   if(!CATALOG || i<0 || i>=CATALOG.length) return;
+   CATALOG.splice(i,1);
+   SEL=SEL.map(function(s){ return s==null?null : s===i?null : (s>i?s-1:s); });
+   renderView();
+ }
+ // Chip click: the × removes the arm; the body fills the first empty slot (clicking a
+ // selected chip un-picks it, down to empty). With both slots full the rest are greyed —
  // un-pick before swapping, which keeps the surviving partner in its slot/color.
  document.addEventListener('click',function(e){
-   var chip=e.target.closest&&e.target.closest('[data-armchip]'); if(!chip)return;
+   var rm=e.target.closest&&e.target.closest('[data-armremove]');
+   if(rm){ e.preventDefault(); removeArm(+rm.getAttribute('data-armremove')); return; }
+   var pick=e.target.closest&&e.target.closest('[data-armpick]'); if(!pick)return;
    e.preventDefault();
-   var i=+chip.getAttribute('data-armchip');
+   var i=+pick.getAttribute('data-armpick');
    var pos=(SEL[0]===i?0:SEL[1]===i?1:-1);
-   if(pos>=0){ SEL[pos]=null; }            // un-pick (may leave nothing selected)
+   if(pos>=0){ SEL[pos]=null; }
    else if(SEL[0]==null){ SEL[0]=i; }
    else if(SEL[1]==null){ SEL[1]=i; }
    else { return; }                        // both full -> greyed; ignore until an un-pick
@@ -2709,23 +2888,29 @@ function __runChart(){
 
  async function resolveAndRender(){
    // Priority: (1) injected window.__ARMS__ -> (2) URL hash -> (3) file picker. The
-   // payload is the arm catalog; with >1 arm we show the selector (default: first arm
-   // solo) and let the user pick 1 to view or 2 to compare. With <=1 arm, render it.
-   var payload=null;
-   if(window.__ARMS__ && window.__ARMS__.length) payload=window.__ARMS__;
+   // payload is either a bare arm array (launcher / roachtest) or {arms, sel} once the
+   // report has round-tripped it (sel = the persisted [slotA, slotB] selection).
+   var raw=null;
+   if(window.__ARMS__ && window.__ARMS__.length) raw=window.__ARMS__;
    else if(location.hash && location.hash.length>1){
-     try{ payload=await decodePayload(location.hash.slice(1)); }
+     try{ raw=await decodePayload(location.hash.slice(1)); }
      catch(e){ /* bad/partial payload -> fall through to picker */ }
    }
-   if(payload && payload.length){
-     CATALOG=payload;
-     if(CATALOG.length<2){ SEL=[0,null]; renderReport(armsForSelection()); }
-     else {
-       // Two arms default to the comparison (the classic workflow); more than two
-       // default to the first arm solo so the user chooses the comparison pair.
-       SEL = CATALOG.length===2 ? [0,1] : [0,null];
-       renderView();
+   var norm = Array.isArray(raw) ? {arms:raw, sel:null}
+            : (raw && Array.isArray(raw.arms) ? raw : null);
+   if(norm && norm.arms.length){
+     CATALOG=norm.arms;
+     var n=CATALOG.length;
+     if(Array.isArray(norm.sel) && norm.sel.length===2){
+       // Restore a persisted selection (drop any now-out-of-range slot).
+       SEL=norm.sel.map(function(x){ return (x==null||x<0||x>=n)?null:x; });
+     } else {
+       // Fresh payload: two arms default to the comparison; more default to first solo.
+       SEL = n===2 ? [0,1] : [0,null];
      }
+     // Restore persisted control state (p99 off, plot=all, ...) before the chart renders.
+     if(norm.ctrl && typeof norm.ctrl==='object'){ CTRL=norm.ctrl; window.__CTRL0__=norm.ctrl; }
+     renderView();
      return;
    }
    showPicker();
