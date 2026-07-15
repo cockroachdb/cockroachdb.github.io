@@ -1,0 +1,2738 @@
+<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>online restore perf breakdown</title>
+<style>
+:root{
+ --surface:#fcfcfb; --page:#f4f4f1; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+ --grid:#e8e7e1; --axis:#c3c2b7; --border:rgba(11,11,11,0.10);
+ --ctl-p50:#f4a06f; --ctl-p95:#e8712f; --ctl-p99:#b4470f;
+ --lh-p50:#86b6ef;  --lh-p95:#3987e5;  --lh-p99:#184f95;
+ --good:#006300; --bad:#c02a2a;
+}
+@media (prefers-color-scheme:dark){
+ :root{
+  --surface:#1a1a19; --page:#0d0d0d; --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.12);
+  --ctl-p50:#f4a06f; --ctl-p95:#e8712f; --ctl-p99:#b4470f;
+  --lh-p50:#9ac1f2;  --lh-p95:#3987e5;  --lh-p99:#256abf;
+  --good:#0ca30c; --bad:#e66767;
+ }
+}
+*{box-sizing:border-box}
+html{background:var(--page)}
+body{font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink);
+ max-width:min(1360px,92vw);margin:0 auto;padding:26px 24px 70px;background:var(--page)}
+.tbl.prov th .chip{display:inline-block;width:11px;height:11px;border-radius:3px;
+ vertical-align:-1px;margin-right:5px}
+.ctrl{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;align-items:center;
+ gap:8px 14px;background:var(--surface);border:1px solid var(--border);border-radius:12px;
+ padding:10px 14px;margin:0 0 20px}
+.ctrl .cl{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;
+ font-weight:600}
+.ctrl button{font:inherit;font-size:13px;font-weight:600;cursor:pointer;
+ border:1px solid var(--border);background:var(--page);color:var(--ink2);
+ border-radius:8px;padding:4px 12px;transition:all .12s}
+.ctrl button:hover{border-color:var(--axis)}
+.ctrl button.on{background:var(--ink);color:var(--surface);border-color:var(--ink)}
+.ctrl .plotsel{font:inherit;font-size:13px;font-weight:600;color:var(--ink2);background:var(--page);
+ border:1px solid var(--border);border-radius:8px;padding:4px 8px;cursor:pointer}
+body.zoomed svg .scrubhit{cursor:zoom-out}   /* click anywhere to reset the zoom */
+/* Segmented control: buttons within a .seg read as one connected switch. */
+.ctrl .seg{display:inline-flex}
+.ctrl .seg button{border-radius:0;border-left-width:0}
+.ctrl .seg button:first-child{border-top-left-radius:8px;border-bottom-left-radius:8px;border-left-width:1px}
+.ctrl .seg button:last-child{border-top-right-radius:8px;border-bottom-right-radius:8px}
+.ctrl .seg button.on{position:relative;z-index:1}
+.openarm{font-size:12px;font-weight:700;text-decoration:none;padding:0 2px}
+.openarm:hover{text-decoration:underline}
+.cmpbox{font:inherit;font-size:11px;color:var(--ink2);background:var(--page);
+  border:1px solid var(--border);border-radius:6px;padding:3px 6px;min-width:220px}
+.cmpbox.bad{border-color:var(--bad)}
+.ctrl .note{font-size:10.5px;color:var(--muted);margin-left:auto;opacity:0.85}
+.ctrl .note .chip{display:inline-block;width:10px;height:10px;border-radius:3px;
+ vertical-align:-1px;margin:0 3px 0 8px}
+section{background:var(--surface);border:1px solid var(--border);border-radius:14px;
+ padding:16px 18px 10px;margin:14px 0}
+h2{font-size:18px;font-weight:640;margin:0 0 8px;letter-spacing:-0.01em}
+.chart{margin:2px 0 8px;min-height:40px;position:relative}
+svg .grid{stroke:var(--grid);stroke-width:1}
+svg .axis{stroke:var(--axis);stroke-width:1}
+svg .ln{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+svg .qpsln{fill:none;stroke-width:1.5;stroke-dasharray:1.5 3;stroke-linecap:round;opacity:0.85;stroke-linejoin:round}  /* qps overlay: dotted */
+svg .mbln{fill:none;stroke-width:1.5;stroke-dasharray:5 3;opacity:0.85;stroke-linejoin:round}   /* download MB/s: dashed */
+svg .dlcurve{fill:none;stroke:var(--muted);stroke-width:1.5;stroke-dasharray:4 3;opacity:0.7}
+svg .dlband{fill:var(--muted);opacity:0.08;stroke:none}   /* download %: min-max spread */
+svg .dldiam{stroke:var(--surface);stroke-width:0.6}       /* 30/60/90% download markers */
+svg .rln{fill:none;stroke-width:1;opacity:0.28;stroke-linejoin:round}  /* ensemble: per-run line */
+svg .dlrun{stroke-width:1;opacity:0.35}                    /* ensemble: per-run download curve */
+svg .msline{stroke:var(--muted);stroke-width:1;opacity:0.5;stroke-dasharray:2 2}   /* download milestone (grey) */
+svg .mslab{fill:var(--muted);font-size:6px;font-weight:600;font-family:system-ui,sans-serif}
+svg .scrub{stroke:var(--ink2);stroke-width:1;opacity:0.55}     /* synced cursor line */
+svg .curlab{font-size:6.5px;font-weight:700;font-family:system-ui,sans-serif;paint-order:stroke;
+ stroke:var(--surface);stroke-width:2px}
+svg .curhead{font-size:6px;font-weight:700;fill:var(--ink2);font-family:system-ui,sans-serif}
+svg .curdot{stroke:var(--surface);stroke-width:1}
+svg .ytick,svg .xtick,svg .y2tick{fill:var(--muted);font-size:6px;font-family:system-ui,sans-serif}
+svg .axtitle{fill:var(--muted);font-size:6px;font-family:system-ui,sans-serif}
+svg .endlab{font-size:7.5px;font-weight:640;font-family:system-ui,sans-serif}
+svg .pctlab{font-size:5.5px;fill:var(--muted);font-family:system-ui,sans-serif}
+.caveat{font-size:11px;color:var(--muted);margin:6px 2px 0}
+table.tbl{border-collapse:collapse;width:100%;font-size:12.5px;
+ font-variant-numeric:tabular-nums;margin:2px 0}
+.tbl th,.tbl td{padding:4px 8px;text-align:right;border-bottom:1px solid var(--grid)}
+.tbl thead th{color:var(--ink2);font-weight:600;font-size:11px;text-transform:uppercase;
+ letter-spacing:0.03em;border-bottom:1px solid var(--axis)}
+.tbl td.l,.tbl th.l{text-align:left}
+.tbl td.l{font-weight:600}
+.tbl td.stage{font-weight:640;color:var(--ink)}
+.tbl .elap{color:var(--ink2);font-weight:500;font-size:11.5px;white-space:nowrap}
+.tbl th.grp{text-align:center;text-transform:none;font-size:12px;font-weight:700;
+ color:var(--ink);border-left:2px solid var(--page)}
+.tbl th.grpl,.tbl td.grpl{border-left:2px solid var(--page)}
+.tbl .unit{color:var(--muted);font-size:9.5px;margin-left:1px}
+.tbl .sd{color:var(--muted);font-size:10.5px;margin-left:5px}
+.tbl tr.dim td,.tbl td.dim{opacity:0.45}
+.tbl td.pcol{font-weight:500}
+.tbl td.dcell{white-space:nowrap}
+.tbl .pval{font-size:15px}
+.tbl .dval{font-size:15px;font-weight:700}
+.tbl .pv{font-size:10.5px;margin-left:4px}
+.tbl .psig{color:var(--ink);font-weight:700}
+.tbl .pns{color:var(--bad);font-weight:600}
+body.hide-p50 .tbl [data-metric="p50"]{display:none}
+body.hide-p95 .tbl [data-metric="p95"]{display:none}
+body.hide-p99 .tbl [data-metric="p99"]{display:none}
+.tip{position:absolute;z-index:30;pointer-events:none;display:none;
+ background:var(--ink);color:var(--surface);font-size:12px;padding:5px 9px;border-radius:6px;
+ white-space:nowrap;box-shadow:0 2px 10px rgba(0,0,0,0.28);font-variant-numeric:tabular-nums;
+ line-height:1.45}
+.copysha{cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px}
+.copysha.copied{color:var(--good);text-decoration:none}
+.tbl.prov td.copyable{cursor:pointer}
+.tbl.prov td.copyable.copied{color:var(--good)}
+.tbl.prov{table-layout:fixed}
+.tbl.prov td,.tbl.prov th{text-align:left;vertical-align:top;word-break:break-word}
+.tbl.prov td:first-child{color:var(--ink2);font-weight:600}
+.tbl.prov td.mid{text-align:center;position:relative}
+.tbl.prov td.mid .rowlabel{position:absolute;left:8px;top:4px;color:var(--ink2);
+ font-weight:600}
+.tbl.prov code{background:rgba(137,135,129,0.15);padding:1px 5px;border-radius:4px;
+ font-family:ui-monospace,Menlo,monospace;font-size:11.5px}
+.tbl.prov code.branch{color:var(--lh-p95);background:color-mix(in srgb,var(--lh-p95) 12%,transparent)}
+
+/* ---- additions not in the Python (client-side ingestion + share/zoom UI):
+        drag-to-zoom selection, copy link, analysis summary, file picker ---- */
+.ctrl .copylink{margin-left:auto}
+.ctrl .copylink.copied{background:var(--good);border-color:var(--good);color:#fff}
+svg .selrect{fill:var(--ink2);opacity:0.12}
+.picker{max-width:640px;margin:8vh auto 0}
+.picker h1{font-size:22px;font-weight:660;margin:0 0 6px}
+.picker p{color:var(--ink2);font-size:14px;margin:4px 0 18px}
+.picker .arm{display:flex;align-items:center;gap:12px;margin:10px 0}
+.picker .arm label{width:120px;font-weight:600}
+.picker .go{margin-top:16px;font:inherit;font-size:14px;font-weight:700;cursor:pointer;
+ border:1px solid var(--ink);background:var(--ink);color:var(--surface);border-radius:9px;
+ padding:8px 18px}
+.picker .go[disabled]{opacity:0.4;cursor:default}
+.picker .err{color:var(--bad);font-size:13px;margin-top:10px;white-space:pre-wrap}
+/* arm catalog picker: shown when >1 arm is bundled; pick 1 to view or 2 to compare. */
+.armbar{display:flex;flex-wrap:wrap;align-items:stretch;gap:8px;margin:0 0 14px}
+.armchip{display:flex;flex-direction:column;align-items:flex-start;gap:1px;cursor:pointer;
+ font:inherit;text-align:left;padding:6px 11px;border-radius:10px;
+ border:1px solid var(--border);background:var(--page);color:var(--ink2)}
+.armchip .armname{font-size:13px;font-weight:640;color:var(--ink)}
+.armchip .armsub{font-size:10.5px;color:var(--muted)}
+/* Chosen arms are shaded in their comparison color (A=ctl, B=exp); once both are
+   chosen the rest dim, so it's visually clear one must be un-picked first. */
+.armchip.selA{background:color-mix(in srgb,var(--ctl-p99) 22%,var(--page));box-shadow:inset 0 0 0 1px var(--ctl-p99)}
+.armchip.selB{background:color-mix(in srgb,var(--lh-p99) 22%,var(--page));box-shadow:inset 0 0 0 1px var(--lh-p99)}
+.armchip.dim{opacity:0.3;cursor:default}
+.armempty{color:var(--muted);font-size:13px;margin:24px 2px}
+/* A solo arm renders positionally as ctl (orange). When the survivor of a comparison
+   is the slot-B arm, remap the ctl palette to the exp (blue) one so its color stays
+   stable — the report is otherwise the same single-arm view. */
+body.soloB{--ctl-p50:var(--lh-p50);--ctl-p95:var(--lh-p95);--ctl-p99:var(--lh-p99)}
+</style></head>
+<body class='hide-p95'>
+<!-- Host injection point: a Go host replaces the RHS / the marked line with the
+     arm catalog. Shape:
+       [{label,name,ts,ab,sha,settings,buildTime,runTime,runs:[samples[]]}].
+     One entry per arm (any number). `ts` is the run's yymmdd-HHMMSS stamp and `ab` is
+     'a'/'b' (roachtest --ab mode) or null; the report derives each arm's display name
+     from these (the minimal date/time that distinguishes the shown arms). `settings` is
+     the arm's full --start-setting map; the report diffs the chosen pair itself. -->
+<script>window.__ARMS__ = null; /*__ARMS_INJECT__*/</script>
+
+<!-- ===================================================================== -->
+<!-- CORE: pure, DOM-free port of analyze_or_perf.py (ingestion, statistics, -->
+<!-- series, cells, the analysis driver, and the HTML-string generators).   -->
+<!-- Extractable between the CORE markers and runnable under node for tests. -->
+<!-- ===================================================================== -->
+<script>
+/*__CORE_START__*/
+(function(){
+"use strict";
+
+// ---- Domain constants (mirror the Python module constants) ----
+var OPS = ["newOrder","payment","orderStatus","delivery","stockLevel","agg"];
+var POINT_OPS = ["newOrder","payment"];
+var SCAN_OPS = ["stockLevel"];
+var MIXED_OPS = ["orderStatus","delivery"];
+var LAT_METRICS = ["p50","p95","p99"];
+var STALLS = ["download_0","download_30","download_60","download_90","download_100"];
+var STALL_PCT = {download_0:0, download_30:30, download_60:60, download_90:90, download_100:100};
+
+var PRIMARY_OPS = ["stockLevel","orderStatus","delivery"];
+var PRIMARY_STALLS = ["download_30","download_60"];
+var PRIMARY_METRICS = ["p95","p99"];
+
+var NEG_CONTROL_MARGIN_PCT = 15.0;
+var EQUIV_MARGIN_PCT = 10.0;
+var MEASURE_WINDOW_S = 30.0;
+var MIN_RELIABLE_SAMPLES = 100;
+var ALPHA = 0.05;
+var FDR_Q = 0.10;
+var PCT_GRID_STEP = 2;
+
+var HARNESS_SETTINGS = {
+  "cluster.organization":1,
+  "debug.panic_on_failed_assertions.enabled":1,
+  "jobs.registry.interval.adopt":1,
+  "jobs.debug.pausepoints":1,
+};
+
+// (op,metric) composite key for the per-sample latency map.
+function LK(op, metric){ return op + " " + metric; }
+
+// Python's round(x, nd): round-half-to-even on the scaled value. Matches CPython
+// for the non-exact-half cases we hit here (means/std of interpolated latencies);
+// only exact N.5 at the rounded digit differs from JS Math.round, and we handle
+// that with the half-even branch below.
+function pyRound(x, nd){
+  if (x === null || x === undefined || (typeof x === "number" && isNaN(x))) return x;
+  var f = Math.pow(10, nd);
+  var v = x * f;
+  var fl = Math.floor(v);
+  var diff = v - fl;
+  var r;
+  if (diff > 0.5) r = fl + 1;
+  else if (diff < 0.5) r = fl;
+  else r = (fl % 2 === 0) ? fl : fl + 1;   // half to even
+  return r / f;
+}
+var NAN = NaN;
+function isnan(x){ return typeof x === "number" && isNaN(x); }
+
+// --------------------------------------------------------------------------
+// Basic robust statistics
+// --------------------------------------------------------------------------
+
+function quantile(xs, q){
+  var s = xs.slice().sort(function(a,b){return a-b;});
+  var n = s.length;
+  if (n === 0) return null;
+  if (n === 1) return s[0]*1.0;
+  var pos = (n-1)*q;
+  var lo = Math.floor(pos), hi = Math.ceil(pos);
+  if (lo === hi) return s[lo]*1.0;
+  return s[lo] + (pos-lo)*(s[hi]-s[lo]);
+}
+function median(xs){ return quantile(xs, 0.5); }
+
+// --------------------------------------------------------------------------
+// Mann-Whitney U (exact via DP over doubled midranks; normal approx w/ ties)
+// --------------------------------------------------------------------------
+
+function _midranks(vals){
+  var n = vals.length;
+  var order = vals.map(function(_,i){return i;}).sort(function(a,b){return vals[a]-vals[b];});
+  var ranks = new Array(n).fill(0.0);
+  var i = 0;
+  while (i < n){
+    var j = i;
+    while (j+1 < n && vals[order[j+1]] === vals[order[i]]) j++;
+    var r = (i+j)/2.0 + 1.0;
+    for (var k=i;k<=j;k++) ranks[order[k]] = r;
+    i = j+1;
+  }
+  return ranks;
+}
+function _tie_counts(vals){
+  var counts = {};
+  for (var i=0;i<vals.length;i++){ var v=vals[i]; counts[v]=(counts[v]||0)+1; }
+  var out=[]; for (var kk in counts){ if (counts[kk]>1) out.push(counts[kk]); }
+  return out;
+}
+// erfc approximation (Numerical Recipes erfcc; |frac err| < 1.2e-7). Only used
+// on the normal-approx branch (large n); the exact branch needs no erfc.
+function erfc(x){
+  var z = Math.abs(x);
+  var t = 1.0/(1.0+0.5*z);
+  var ans = t*Math.exp(-z*z-1.26551223+t*(1.00002368+t*(0.37409196+t*(0.09678418+
+    t*(-0.18628806+t*(0.27886807+t*(-1.13520398+t*(1.48851587+
+    t*(-0.82215223+t*0.17087277)))))))));
+  return x >= 0 ? ans : 2.0-ans;
+}
+function mann_whitney(x, y, exact_max){
+  exact_max = exact_max === undefined ? 12 : exact_max;
+  var n1 = x.length, n2 = y.length;
+  if (n1 === 0 || n2 === 0) return [NAN, NAN, "none"];
+  var pooled = x.concat(y);
+  var ranks = _midranks(pooled);
+  var w1 = 0; for (var i=0;i<n1;i++) w1 += ranks[i];   // rank sum of first sample
+  var u1 = w1 - n1*(n1+1)/2.0;
+
+  if (n1 <= exact_max && n2 <= exact_max){
+    var r2 = ranks.map(function(r){return Math.round(2*r);});   // doubled -> ints
+    var dp = [];
+    for (var k=0;k<=n1;k++) dp.push(new Map());
+    dp[0].set(0, 1);
+    for (var ri=0;ri<r2.length;ri++){
+      var r = r2[ri];
+      for (var kk=n1;kk>=1;kk--){
+        var src = dp[kk-1];
+        if (src.size === 0) continue;
+        var dst = dp[kk];
+        src.forEach(function(c, s){ dst.set(s+r, (dst.get(s+r)||0)+c); });
+      }
+    }
+    var dist = dp[n1];
+    var total = 0; dist.forEach(function(c){ total += c; });
+    var w2 = Math.round(2*w1);
+    var pLow = 0, pHigh = 0;
+    dist.forEach(function(c, s){ if (s <= w2) pLow += c; if (s >= w2) pHigh += c; });
+    pLow /= total; pHigh /= total;
+    var p = Math.min(1.0, 2.0*Math.min(pLow, pHigh));
+    return [u1, p, "exact"];
+  }
+  // Normal approximation with tie correction + continuity correction.
+  var N = n1+n2;
+  var mu = n1*n2/2.0;
+  var tieTerm = 0; _tie_counts(pooled).forEach(function(t){ tieTerm += t*t*t - t; });
+  var varr = (n1*n2/12.0)*((N+1) - tieTerm/(N*(N-1)));
+  if (varr <= 0) return [u1, 1.0, "normal"];
+  var sigma = Math.sqrt(varr);
+  var z = (Math.abs(u1-mu)-0.5)/sigma;
+  var pn = erfc(z/Math.sqrt(2.0));
+  return [u1, Math.min(1.0, pn), "normal"];
+}
+
+// --------------------------------------------------------------------------
+// Hodges-Lehmann estimator + distribution-free CI
+// --------------------------------------------------------------------------
+
+var _uNullCache = new Map();
+function _u_null_counts(m, n){
+  var key = m+","+n;
+  if (_uNullCache.has(key)) return _uNullCache.get(key);
+  var memo = new Map();
+  function f(a, b, u){
+    if (u < 0) return 0;
+    if (a === 0 || b === 0) return u === 0 ? 1 : 0;
+    var k = a+","+b+","+u;
+    if (memo.has(k)) return memo.get(k);
+    var v = f(a-1, b, u-b) + f(a, b-1, u);
+    memo.set(k, v);
+    return v;
+  }
+  var out = [];
+  for (var u=0; u<=m*n; u++) out.push(f(m, n, u));
+  _uNullCache.set(key, out);
+  return out;
+}
+function _hl_trim(m, n, alpha){
+  var mn = m*n;
+  if (m <= 12 && n <= 12){
+    var counts = _u_null_counts(m, n);
+    var total = 0; counts.forEach(function(c){ total += c; });
+    var target = alpha/2.0*total;
+    var k = 0, cum = 0;
+    while (k < mn && cum + counts[k] <= target){ cum += counts[k]; k++; }
+    return k;
+  }
+  var z = 1.959963984540054;
+  var kk = Math.floor(mn/2.0 - z*Math.sqrt(mn*(m+n+1)/12.0));
+  return Math.max(0, kk|0);
+}
+function hodges_lehmann(x_exp, x_ctl, alpha){
+  alpha = alpha === undefined ? 0.05 : alpha;
+  var m = x_exp.length, n = x_ctl.length;
+  if (m === 0 || n === 0) return [NAN, NAN, NAN];
+  var diffs = [];
+  for (var i=0;i<m;i++) for (var j=0;j<n;j++) diffs.push(x_exp[i]-x_ctl[j]);
+  diffs.sort(function(a,b){return a-b;});
+  var est = median(diffs);
+  var mn = m*n;
+  var k = _hl_trim(m, n, alpha);
+  if (k >= Math.floor((mn+1)/2)) return [est, NAN, NAN];
+  return [est, diffs[k], diffs[mn-1-k]];
+}
+
+// --------------------------------------------------------------------------
+// Benjamini-Hochberg FDR
+// --------------------------------------------------------------------------
+
+function bh_fdr(pvals){
+  var m = pvals.length;
+  if (m === 0) return [];
+  var order = pvals.map(function(_,i){return i;}).sort(function(a,b){return pvals[a]-pvals[b];});
+  var q = new Array(m).fill(0.0);
+  var prev = 1.0;
+  for (var rank=m; rank>=1; rank--){
+    var i = order[rank-1];
+    var val = pvals[i]*m/rank;
+    prev = Math.min(prev, val);
+    q[i] = Math.min(1.0, prev);
+  }
+  return q;
+}
+
+// --------------------------------------------------------------------------
+// Ingestion: the per-run time series (from a summary_report.json `samples`)
+// --------------------------------------------------------------------------
+
+function qps_weighted_agg(lat, qps){
+  var tot = 0.0;
+  var acc = {p50:0.0, p95:0.0, p99:0.0};
+  for (var op in qps){
+    var q = qps[op];
+    if (q === null || q === undefined || q <= 0) continue;
+    tot += q;
+    for (var mi=0;mi<LAT_METRICS.length;mi++){
+      var m = LAT_METRICS[mi];
+      var v = lat[LK(op,m)];
+      if (v !== null && v !== undefined) acc[m] += q*v;
+    }
+  }
+  if (tot <= 0) return null;
+  var out = {}; LAT_METRICS.forEach(function(m){ out[m] = acc[m]/tot; });
+  out.qps = tot;
+  return out;
+}
+
+// parse_run consumes the test's report:
+//
+//   { "download": [[elapsed_s, download_pct, mb_per_s, l0_mb, read_amp], ...],
+//     "samples":  { "<op>": [[elapsed_s, qps, p50_ms, p95_ms, p99_ms], ...], ... } }
+//
+// Download progress is a single run-global series (its own cadence); per-op rows
+// carry only latency+qps. We re-group the per-op rows by sample time and attach the
+// download fields (pct + mb/s + L0 MB + read-amp) to each sample by interpolating the
+// download series at the sample's elapsed (held forward past the last download reading
+// — the steady-state tail after 100%). The report emits only the real ops; the "agg"
+// op (Overall Workload Latency) is derived here as the per-sample QPS-weighted mean.
+// Values are already whole-ms latencies and 0.1%-resolution download.
+function parse_run(run){
+  if (!run || typeof run !== "object" || Array.isArray(run)) return [];
+  var opMap = (run.samples && typeof run.samples === "object") ? run.samples : {};
+  var byT = {};   // elapsed(sec) -> sample
+  for (var op in opMap){
+    var rows = opMap[op] || [];
+    for (var i=0;i<rows.length;i++){
+      var r = rows[i];
+      if (!r || r.length < 5) continue;
+      var qps = r[1], p50 = r[2], p95 = r[3], p99 = r[4];
+      if (p50 === 0 && p95 === 0 && p99 === 0) continue;  // no active ticks -> phantom 0
+      var k = ""+r[0], s = byT[k];
+      if (!s){ s = byT[k] = {el:+r[0], pct:null, lat:{}, qps:{}, ctx:{}}; }
+      if (qps != null) s.qps[op] = +qps;
+      if (p50 != null) s.lat[LK(op,"p50")] = +p50;
+      if (p95 != null) s.lat[LK(op,"p95")] = +p95;
+      if (p99 != null) s.lat[LK(op,"p99")] = +p99;
+    }
+  }
+  var dl = (Array.isArray(run.download) ? run.download : [])
+    .filter(function(d){ return Array.isArray(d) && d.length >= 2; })
+    .map(function(d){ return {el:+d[0], pct:+d[1], mbps:_n(d[2]), l0:_n(d[3]), ramp:_n(d[4])}; })
+    .sort(function(a,b){ return a.el-b.el; });
+  // Add a bare sample at each download time that has no op row (notably the 0s
+  // baseline, before any transaction completes), so the download curve anchors there.
+  // Such samples carry download fields only — no latency — so latency simply has no
+  // point where nothing completed yet.
+  dl.forEach(function(d){ var k=""+d.el; if(!byT[k]) byT[k]={el:d.el, pct:null, lat:{}, qps:{}, ctx:{}}; });
+
+  var samples = Object.keys(byT).map(function(k){ return byT[k]; });
+  samples.sort(function(a,b){return a.el-b.el;});
+
+  // Derive the "agg" op (Overall Workload Latency) per sample: the QPS-weighted mean
+  // of the per-op latencies. The report emits the raw per-op series and leaves the
+  // aggregate to the consumer, so compute it here from each sample's qps + latencies.
+  samples.forEach(function(s){
+    var a = qps_weighted_agg(s.lat, s.qps);
+    if (a){ s.lat[LK("agg","p50")]=a.p50; s.lat[LK("agg","p95")]=a.p95;
+            s.lat[LK("agg","p99")]=a.p99; s.qps["agg"]=a.qps; }
+  });
+
+  if (dl.length){
+    samples.forEach(function(s){ var d = _dl_at(dl, s.el);
+      s.pct = d.pct/100; s.mbps = d.mbps; s.l0 = d.l0; s.ramp = d.ramp; });
+  }
+  return samples;
+}
+function _n(v){ return (v === null || v === undefined) ? null : +v; }
+function _ln(a, b, t){ return (a == null || b == null) ? (a != null ? a : b) : a + (b-a)*t; }
+// Interpolate the download series at elapsed `el`, holding the endpoints (before the
+// first / after the last reading, the latter being the steady-state tail at 100%).
+function _dl_at(dl, el){
+  var n = dl.length;
+  if (el <= dl[0].el) return dl[0];
+  if (el >= dl[n-1].el) return dl[n-1];
+  for (var i=1;i<n;i++){ if (dl[i].el >= el){ var a=dl[i-1], b=dl[i], t=(b.el===a.el)?0:(el-a.el)/(b.el-a.el);
+    return {pct:a.pct+(b.pct-a.pct)*t, mbps:_ln(a.mbps,b.mbps,t), l0:_ln(a.l0,b.l0,t), ramp:_ln(a.ramp,b.ramp,t)}; } }
+  return dl[n-1];
+}
+
+// --------------------------------------------------------------------------
+// Series helpers: crossings, interpolation, resampling
+// --------------------------------------------------------------------------
+
+function crossing_sample(samples, pct){
+  for (var i=0;i<samples.length;i++){
+    if (samples[i].pct*100.0 >= pct) return samples[i];
+  }
+  return null;
+}
+function _xy(samples, op, metric, xkey){
+  var pts = [];
+  for (var i=0;i<samples.length;i++){
+    var s = samples[i];
+    // qps (per op) and mbps (global download rate) live outside the lat map.
+    var y = (metric === "qps") ? s.qps[op] : (metric === "mbps") ? s.mbps : s.lat[LK(op,metric)];
+    if (y === null || y === undefined) continue;
+    var x = xkey === "el" ? s.el : s.pct*100.0;
+    pts.push([x, y]);
+  }
+  pts.sort(function(a,b){return a[0]-b[0];});
+  return pts;
+}
+function _interp(pts, xq){
+  if (!pts.length || xq < pts[0][0] || xq > pts[pts.length-1][0]) return null;
+  var lo = 0, hi = pts.length-1;
+  while (lo < hi){
+    var mid = (lo+hi)>>1;
+    if (pts[mid][0] < xq) lo = mid+1; else hi = mid;
+  }
+  if (pts[lo][0] === xq || lo === 0) return pts[lo][1];
+  var x0=pts[lo-1][0], y0=pts[lo-1][1], x1=pts[lo][0], y1=pts[lo][1];
+  if (x1 === x0) return y1;
+  return y0 + (y1-y0)*(xq-x0)/(x1-x0);
+}
+function _mean_std(xs){
+  var n = xs.length;
+  var m = 0; for (var i=0;i<n;i++) m += xs[i]; m /= n;
+  var vv = 0;
+  if (n > 1){ for (var j=0;j<n;j++){ var d = xs[j]-m; vv += d*d; } vv /= (n-1); }
+  return [m, Math.sqrt(vv)];
+}
+function resample(runs, op, metric, xkey, grid){
+  var xys = runs.map(function(r){ return _xy(r, op, metric, xkey); });
+  var out = [];
+  for (var gi=0;gi<grid.length;gi++){
+    var g = grid[gi];
+    var ys = [];
+    for (var k=0;k<xys.length;k++){ var v = _interp(xys[k], g); if (v !== null) ys.push(v); }
+    if (ys.length){
+      var ms = _mean_std(ys);
+      var lo = ys[0], hi = ys[0];
+      for (var q=1;q<ys.length;q++){ if (ys[q]<lo) lo=ys[q]; if (ys[q]>hi) hi=ys[q]; }
+      out.push({x:g, m:pyRound(ms[0],3), s:pyRound(ms[1],3),
+                lo:pyRound(lo,3), hi:pyRound(hi,3), n:ys.length});
+    }
+  }
+  return out;
+}
+function download_curve(runs, grid_el){
+  var xys = runs.map(function(r){
+    return r.map(function(s){return [s.el, s.pct*100.0];}).sort(function(a,b){return a[0]-b[0];});
+  });
+  var out = [];
+  for (var gi=0;gi<grid_el.length;gi++){
+    var g = grid_el[gi];
+    var ys = [];
+    for (var k=0;k<xys.length;k++){
+      var xy = xys[k];
+      if (!xy.length) continue;
+      // Hold each run's value flat outside its sampled range instead of dropping
+      // it: download progress only rises and stays at 100% once complete, so a
+      // finished run must keep contributing 100% at later grid points. Dropping it
+      // (plain _interp -> null) removes a 100% value and makes the AVERAGED curve
+      // dip back down — a pure averaging artifact, not real de-download.
+      var v = g <= xy[0][0] ? xy[0][1]
+            : g >= xy[xy.length-1][0] ? xy[xy.length-1][1]
+            : _interp(xy, g);
+      if (v !== null) ys.push(v);
+    }
+    if (ys.length){
+      var m = 0, lo = ys[0], hi = ys[0];
+      for (var i=0;i<ys.length;i++){ m += ys[i]; if (ys[i]<lo) lo=ys[i]; if (ys[i]>hi) hi=ys[i]; }
+      m /= ys.length;
+      out.push({x:g, y:pyRound(m, 2), lo:pyRound(lo, 2), hi:pyRound(hi, 2)});
+    }
+  }
+  return out;
+}
+function crossings_elapsed(runs){
+  var out = {};
+  [30,60,90,100].forEach(function(pct){
+    var els = [];
+    for (var i=0;i<runs.length;i++){ var s = crossing_sample(runs[i], pct); if (s !== null) els.push(s.el); }
+    if (els.length){ var sum=0; els.forEach(function(v){sum+=v;}); out[pct] = pyRound(sum/els.length, 1); }
+  });
+  return out;
+}
+
+function build_series(op, ctl_runs, exp_runs, dual, el_grid, pct_grid){
+  var arms = [["ctl", ctl_runs]];
+  if (dual) arms.push(["exp", exp_runs]);
+  var el = {}, pc = {}, dl = {}, cr = {}, elRuns = {}, pcRuns = {}, dlRuns = {}, ep = {}, epRuns = {};
+  // qps (per op) as its own mean + per-run series, elapsed and pct x — an optional
+  // dashed overlay on the latency plots (its own scale, not ms).
+  var qpEl = {}, qpPc = {}, qpElRuns = {}, qpPcRuns = {};
+  // mbps (global download rate) mean+std+per-run series — the download chart's 2nd axis.
+  var mb = {}, mbPc = {}, mbRuns = {}, mbPcRuns = {};
+  var toPts = function(xy){ return xy.map(function(p){return {x:p[0], y:p[1]};}); };
+  arms.forEach(function(pair){
+    var arm = pair[0], runs = pair[1];
+    if (!runs.length) return;
+    // The %-downloaded axis is only defined up to 100%. Post-download steady-state
+    // samples all carry pct==100, so for the pct-based series we truncate each run
+    // at its first 100% reading. Elapsed mode keeps the full run (the tail extends
+    // naturally to the right in time).
+    // TODO: figure out how %-mode should actually render post-download readings
+    // (e.g. synthesize x>100 scaled by time-since-complete). Ill-defined for now,
+    // so we simply end the %-mode curves at the first 100% sample.
+    var pruns = runs.map(function(r){
+      for (var i=0;i<r.length;i++){ if (r[i].pct*100.0 >= 100) return r.slice(0,i+1); }
+      return r;
+    });
+    // At each % grid point: mean elapsed (also used to clip the %-series .e range).
+    // ELAPSED-by-% is the %-mode second-y curve (ep, mean+min/max) + ensemble
+    // (epRuns): every run starts at (0%, 0s) and rises, reaching 100% at whatever
+    // time it finishes. The band is thus pinned at 0 on the left and fans out to the
+    // right — the runs started together and diverged as they ran. (A "time
+    // remaining" curve inverts this, placing a slower run higher at 0% as if it had
+    // started behind, which it hadn't.)
+    var pct_el = {}, epArr = [];
+    pct_grid.forEach(function(g){
+      var els = [];
+      for (var k=0;k<pruns.length;k++){
+        var xy = pruns[k].map(function(s){return [s.pct*100.0, s.el];}).sort(function(a,b){return a[0]-b[0];});
+        var v = _interp(xy, g);
+        if (v !== null) els.push(v);
+      }
+      pct_el[g] = els.length ? (els.reduce(function(a,b){return a+b;},0)/els.length) : null;
+      if (els.length){
+        var m=0, lo=els[0], hi=els[0];
+        for (var q=0;q<els.length;q++){ m+=els[q]; if(els[q]<lo)lo=els[q]; if(els[q]>hi)hi=els[q]; }
+        m/=els.length;
+        epArr.push({x:g, y:pyRound(m,1), lo:pyRound(lo,1), hi:pyRound(hi,1)});
+      }
+    });
+    ep[arm] = epArr;
+    epRuns[arm] = pruns.map(function(r){
+      return r.map(function(s){return {x:s.pct*100.0, y:s.el};}).sort(function(a,b){return a.x-b.x;});
+    });
+    LAT_METRICS.forEach(function(metric){
+      el[arm+"_"+metric] = resample(runs, op, metric, "el", el_grid);          // elapsed: full run
+      var pts = resample(pruns, op, metric, "pct", pct_grid);                  // pct: truncated at 100%
+      pts.forEach(function(p){ var e = pct_el[p.x]; p.e = (e !== null && e !== undefined) ? pyRound(e,1) : null; });
+      pc[arm+"_"+metric] = pts;
+      // Raw per-run polylines (ensemble mode) — actual sample points, no resampling.
+      elRuns[arm+"_"+metric] = runs.map(function(r){ return toPts(_xy(r, op, metric, "el")); });
+      pcRuns[arm+"_"+metric] = pruns.map(function(r){ return toPts(_xy(r, op, metric, "pct")); });
+    });
+    dl[arm] = download_curve(runs, el_grid);
+    dlRuns[arm] = runs.map(function(r){
+      return r.map(function(s){return {x:s.el, y:s.pct*100.0};}).sort(function(a,b){return a.x-b.x;});
+    });
+    qpEl[arm] = resample(runs, op, "qps", "el", el_grid);
+    qpPc[arm] = resample(pruns, op, "qps", "pct", pct_grid);
+    qpElRuns[arm] = runs.map(function(r){ return toPts(_xy(r, op, "qps", "el")); });
+    qpPcRuns[arm] = pruns.map(function(r){ return toPts(_xy(r, op, "qps", "pct")); });
+    // mbps is download-global (op ignored by _xy); mean+std+min/max like latency. Drop
+    // the x=0 origin (rate 0, no predecessor) AND the first non-zero point: that first
+    // interval's rate spans [0, t1] and is skewed by bytes downloaded before t0 during
+    // link setup. The reported rate is only trustworthy from the SECOND non-zero sample
+    // onward, so plot from there.
+    var pos=function(pts){ return pts.filter(function(p){return (p.x!=null?p.x:p[0])>0;}).slice(1); };
+    mb[arm] = pos(resample(runs, op, "mbps", "el", el_grid));
+    mbPc[arm] = pos(resample(pruns, op, "mbps", "pct", pct_grid));
+    mbRuns[arm] = runs.map(function(r){ return pos(toPts(_xy(r, op, "mbps", "el"))); });
+    mbPcRuns[arm] = pruns.map(function(r){ return pos(toPts(_xy(r, op, "mbps", "pct"))); });
+    var ce = crossings_elapsed(runs);
+    var crArm = {}; for (var kk in ce) crArm[String(kk)] = ce[kk];
+    cr[arm] = crArm;
+  });
+  return {big: op === "agg", el: el, pc: pc, dl: dl, cr: cr,
+          elRuns: elRuns, pcRuns: pcRuns, dlRuns: dlRuns, ep: ep, epRuns: epRuns,
+          qpEl: qpEl, qpPc: qpPc, qpElRuns: qpElRuns, qpPcRuns: qpPcRuns,
+          mb: mb, mbPc: mbPc, mbRuns: mbRuns, mbPcRuns: mbPcRuns};
+}
+
+// --------------------------------------------------------------------------
+// Cells: A/B statistics at the download crossings
+// --------------------------------------------------------------------------
+
+function _summ(xs){
+  if (!xs.length) return {n:0, median:null, q1:null, q3:null, min:null, max:null, mean:null, std:null, vals:[]};
+  var n = xs.length;
+  var m = 0; for (var i=0;i<n;i++) m += xs[i]; m /= n;
+  var vv = 0;
+  if (n > 1){ for (var j=0;j<n;j++){ var d = xs[j]-m; vv += d*d; } vv /= (n-1); }
+  return {n:n, median:median(xs), q1:quantile(xs,0.25), q3:quantile(xs,0.75),
+          min:Math.min.apply(null,xs), max:Math.max.apply(null,xs),
+          mean:m, std:Math.sqrt(vv), vals:xs.slice().sort(function(a,b){return a-b;})};
+}
+function _ranges_overlap(a, b){
+  if (!a.length || !b.length) return false;
+  return !(Math.max.apply(null,a) < Math.min.apply(null,b) || Math.max.apply(null,b) < Math.min.apply(null,a));
+}
+function _cross_lat(run, op, metric, stall){
+  var s = crossing_sample(run, STALL_PCT[stall]);
+  if (!s) return null;
+  var v = s.lat[LK(op,metric)];
+  return (v === undefined) ? null : v;
+}
+function _cross_qps(run, op, stall){
+  var s = crossing_sample(run, STALL_PCT[stall]);
+  if (!s) return null;
+  var v = s.qps[op];
+  return (v === undefined) ? null : v;
+}
+function CK(op, metric, stall){ return op+"|"+metric+"|"+stall; }
+
+function build_cells(ctl_runs, exp_runs){
+  var cells = {};      // key -> cell
+  var order = [];      // ordered keys (OPS x LAT_METRICS x STALLS)
+  OPS.forEach(function(op){
+    LAT_METRICS.forEach(function(metric){
+      STALLS.forEach(function(stall){
+        var c = {op:op, metric:metric, stall:stall, ctl:[], exp:[], stats:{}};
+        ctl_runs.forEach(function(run){ var v=_cross_lat(run,op,metric,stall); if (v!==null) c.ctl.push(v); });
+        exp_runs.forEach(function(run){ var v=_cross_lat(run,op,metric,stall); if (v!==null) c.exp.push(v); });
+        var k = CK(op,metric,stall);
+        cells[k] = c; order.push(k);
+      });
+    });
+  });
+  return {cells:cells, order:order};
+}
+function qps_median(runs, op, stall){
+  var vals = [];
+  runs.forEach(function(run){ var v=_cross_qps(run,op,stall); if (v!==null) vals.push(v); });
+  return vals.length ? median(vals) : null;
+}
+function compute_cell_stats(c, ctl_runs, exp_runs){
+  var ctl_s = _summ(c.ctl), exp_s = _summ(c.exp);
+  var mw = mann_whitney(c.ctl, c.exp);
+  var hlv = hodges_lehmann(c.exp, c.ctl);
+
+  var ratio = null, delta_pct = null;
+  if (ctl_s.median !== null && ctl_s.median !== 0 && exp_s.median !== null){
+    ratio = exp_s.median/ctl_s.median;
+    delta_pct = (exp_s.median-ctl_s.median)/ctl_s.median*100.0;
+  }
+  var delta_mean = null, delta_mean_pct = null;
+  if (ctl_s.mean !== null && ctl_s.mean !== 0 && exp_s.mean !== null){
+    delta_mean = exp_s.mean-ctl_s.mean;
+    delta_mean_pct = delta_mean/ctl_s.mean*100.0;
+  }
+  var ctl_qps = qps_median(ctl_runs, c.op, c.stall);
+  var exp_qps = qps_median(exp_runs, c.op, c.stall);
+  var n_samp = null;
+  if (ctl_qps !== null && exp_qps !== null) n_samp = pyRound(Math.min(ctl_qps,exp_qps)*MEASURE_WINDOW_S, 0);
+  var reliable = (n_samp !== null && n_samp >= MIN_RELIABLE_SAMPLES);
+
+  c.stats = {
+    ctl:ctl_s, exp:exp_s, U:mw[0], p:mw[1], method:mw[2],
+    hl:hlv[0], hl_lo:hlv[1], hl_hi:hlv[2], ratio:ratio, delta_pct:delta_pct,
+    delta_mean:delta_mean, delta_mean_pct:delta_mean_pct,
+    ctl_qps:ctl_qps, exp_qps:exp_qps, n_samp:n_samp, reliable:reliable,
+    overlap:_ranges_overlap(c.ctl, c.exp), _q:null,
+  };
+  return c.stats;
+}
+function is_primary(op, metric, stall){
+  return PRIMARY_OPS.indexOf(op)>=0 && PRIMARY_STALLS.indexOf(stall)>=0 && PRIMARY_METRICS.indexOf(metric)>=0;
+}
+
+// --------------------------------------------------------------------------
+// Formatting helpers (mirror the Python formatters exactly, incl. glyphs)
+// --------------------------------------------------------------------------
+
+function _fmt(v, nd){
+  nd = nd === undefined ? 1 : nd;
+  if (v === null || v === undefined || isnan(v)) return "-";
+  return v.toFixed(nd);
+}
+function esc(s){
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;").replace(/'/g,"&#x27;");
+}
+function _commas(x){ return x.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
+function _num(v){
+  if (v === null || v === undefined || isnan(v)) return "–";
+  if (v >= 100) return _commas(Math.round(v));
+  if (v >= 10) return String(Math.round(v));
+  return v.toFixed(1);
+}
+function _sms(v){
+  if (v === null || v === undefined || isnan(v)) return "–";
+  return (v >= 0 ? "+" : "−") + _num(Math.abs(v));
+}
+function _pct(v, nd, signed){
+  nd = nd === undefined ? 0 : nd;
+  signed = signed === undefined ? true : signed;
+  if (v === null || v === undefined || isnan(v)) return "–";
+  var s = signed ? (v>=0?"+":"") + v.toFixed(nd) : v.toFixed(nd);
+  return s + "%";
+}
+// Compact p: 0.007 -> .007, 1e-5 -> 1e-05 (matches Python's %.2g / %.0e + strip).
+function _g2(p){
+  // Emulate Python "%.2g".
+  if (p === 0) return "0";
+  var exp = Math.floor(Math.log10(Math.abs(p)));
+  var s;
+  if (exp < -4 || exp >= 2){
+    s = p.toExponential(1);
+    // normalize exponent to at least 2 digits like Python (e.g. 1e-05, 1.2e+02)
+    s = s.replace(/e([+-])(\d)$/, "e$10$2");
+  } else {
+    var digits = Math.max(0, 1 - exp);
+    s = p.toFixed(digits);
+    // trim trailing zeros / dot like %g
+    if (s.indexOf(".") >= 0) s = s.replace(/0+$/,"").replace(/\.$/,"");
+  }
+  return s;
+}
+function _e0(p){
+  var s = p.toExponential(0);
+  return s.replace(/e([+-])(\d)$/, "e$10$2");
+}
+function _pfmt(p){
+  if (p === null || p === undefined || isnan(p)) return "–";
+  var s = p >= 1e-4 ? _g2(p) : _e0(p);
+  return s.indexOf("0.") === 0 ? s.slice(1) : s;
+}
+function _nice_step(x){
+  if (x <= 0) return 1.0;
+  var e = Math.pow(10, Math.floor(Math.log10(x)));
+  var f = x/e;
+  var nf = f<1.5?1:f<3?2:f<7?5:10;
+  return nf*e;
+}
+
+var SERIES_VAR = {
+  "ctl|p50":"--ctl-p50","ctl|p95":"--ctl-p95","ctl|p99":"--ctl-p99",
+  "exp|p50":"--lh-p50","exp|p95":"--lh-p95","exp|p99":"--lh-p99",
+};
+
+// --------------------------------------------------------------------------
+// Static no-JS fallback SVG (JS re-renders on load). Port of bake_svg.
+// --------------------------------------------------------------------------
+function bake_svg(op, series, big){
+  var W = 760, H = 320;                  // all charts share one size
+  var x0 = 52, x1 = 690, yt = 22, yb = 284;
+  var mets = ["p50","p99"];
+  var keys = [];
+  mets.forEach(function(m){ ["ctl","exp"].forEach(function(arm){ keys.push([arm,m]); }); });
+  function pts(arm,m){ return series.el[arm+"_"+m] || []; }
+  var hi = [];
+  keys.forEach(function(km){ pts(km[0],km[1]).forEach(function(p){ hi.push(p.m+p.s); }); });
+  if (!hi.length) return "";
+  var ymax = Math.max.apply(null,hi)*1.02;
+  var step = _nice_step(ymax/5.0);
+  ymax = Math.ceil(ymax/step)*step || 1.0;
+  var xs = [];
+  keys.forEach(function(km){ pts(km[0],km[1]).forEach(function(p){ xs.push(p.x); }); });
+  var xmax = xs.length ? Math.max.apply(null,xs) : 1.0; xmax = xmax || 1.0;
+  function Y(v){ return yb - (v/ymax)*(yb-yt); }
+  function X(v){ return x0 + (v/xmax)*(x1-x0); }
+  var P = [];
+  P.push('<svg viewBox="0 0 '+W+' '+H+'" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-label="latency for '+esc(op)+'">');
+  var v = 0.0;
+  while (v <= ymax+1e-9){
+    var y = Y(v);
+    P.push('<line class="grid" x1="'+x0+'" y1="'+y.toFixed(1)+'" x2="'+x1+'" y2="'+y.toFixed(1)+'"/>');
+    P.push('<text class="ytick" x="'+(x0-5)+'" y="'+(y+2).toFixed(1)+'" text-anchor="end">'+(v===0?"0":_num(v))+'ms</text>');
+    v += step;
+  }
+  P.push('<line class="axis" x1="'+x0+'" y1="'+yt+'" x2="'+x0+'" y2="'+yb+'"/>');
+  P.push('<line class="axis" x1="'+x0+'" y1="'+yb+'" x2="'+x1+'" y2="'+yb+'"/>');
+  var es = _nice_step(xmax/5.0);
+  var ev = 0.0;
+  while (ev <= xmax+1e-9){
+    var x = X(ev);
+    P.push('<line class="grid" x1="'+x.toFixed(1)+'" y1="'+yt+'" x2="'+x.toFixed(1)+'" y2="'+yb+'" opacity="0.5"/>');
+    P.push('<text class="xtick" x="'+x.toFixed(1)+'" y="'+(yb+9)+'" text-anchor="middle">'+ev.toFixed(0)+'s</text>');
+    ev += es;
+  }
+  P.push('<text class="axtitle" x="'+((x0+x1)/2).toFixed(1)+'" y="'+(H-4)+'" text-anchor="middle">elapsed (s)</text>');
+  keys.forEach(function(km){
+    var pp = pts(km[0],km[1]);
+    if (pp.length >= 2){
+      var vv = SERIES_VAR[km[0]+"|"+km[1]];
+      var d = pp.map(function(p,i){ return (i===0?"M":"L")+X(p.x).toFixed(1)+" "+Y(p.m).toFixed(1); }).join(" ");
+      P.push('<path class="ln" style="stroke:var('+vv+')" fill="none" d="'+d+'"/>');
+    }
+  });
+  P.push('</svg>');
+  return P.join("");
+}
+
+// --------------------------------------------------------------------------
+// HTML table generators (port of _avg, _group_cells, _elapsed_cell, op_table,
+// prov_table, time_to_stall_table)
+// --------------------------------------------------------------------------
+
+var MAIN_METRICS = ["p50","p95","p99"];
+
+function _avg(s, unit){
+  unit = unit || "ms";
+  if (s.mean === null || s.mean === undefined) return "–";
+  // The ±std only means something with more than one run; omit it otherwise.
+  var sd = (s.n > 1) ? '<span class="sd">±'+_num(s.std||0)+'</span>' : "";
+  return '<span class="pval">'+_num(s.mean)+'</span><span class="unit">'+unit+'</span>'+sd;
+}
+// opts (optional): {unit:"ms"|"%", higherBetter:bool}. Default is latency-style —
+// unit "ms" and lower-is-better (a negative delta is the "good" green). The
+// download column passes {unit:"%", higherBetter:true} so more-downloaded is green.
+function _group_cells(st, dual, op, metric, stage_pct, singleArm, opts){
+  opts = opts || {}; var unit = opts.unit || "ms"; var goodPos = !!opts.higherBetter;
+  var ids = 'data-op="'+op+'" data-metric="'+metric+'" data-stage="'+stage_pct+'"';
+  if (!dual){ var arm = singleArm || 'ctl';
+    return '<td class="vcell" data-arm="'+(arm==='ctl'?'A':'B')+'" '+ids+'>'+_avg(st[arm],unit)+'</td>'; }
+  var p = st.p;
+  var sig = (!isnan(p) && p < ALPHA);
+  var dm = st.delta_mean, dmp = st.delta_mean_pct;
+  var dimc = sig ? "" : " dim";
+  var a = '<td class="grpl vcell'+dimc+'" data-arm="A" '+ids+'>'+_avg(st.ctl,unit)+'</td>';
+  var b = '<td class="vcell'+dimc+'" data-arm="B" '+ids+'>'+_avg(st.exp,unit)+'</td>';
+  var dm_ids = 'data-metric="'+metric+'"';
+  var d;
+  if (dmp === null || dmp === undefined || isnan(p)){
+    d = '<td class="dcell'+dimc+'" '+dm_ids+'>–</td>';
+  } else {
+    var improved = goodPos ? (dm > 0) : (dm < 0);
+    var vr = improved ? "--good" : "--bad";
+    var pcls = sig ? "psig" : "pns";
+    d = '<td class="dcell'+dimc+'" '+dm_ids+'>'
+      + '<span class="dval" style="color:var('+vr+')">'+_pct(dmp)+'</span>'
+      + '<span class="pv '+pcls+'">p='+_pfmt(p)+'</span></td>';
+  }
+  return a+b+d;
+}
+// One run's raw crossing values (no band, no p) — used when a specific run is
+// selected. c.ctl / c.exp are the per-run values for this cell. See _group_cells
+// for `opts`.
+function _group_cells_run(c, dual, op, metric, stage_pct, idx, singleArm, opts){
+  opts = opts || {}; var unit = opts.unit || "ms"; var goodPos = !!opts.higherBetter;
+  var ids = 'data-op="'+op+'" data-metric="'+metric+'" data-stage="'+stage_pct+'"';
+  var one = function(v){ return (v===null||v===undefined) ? "–"
+    : '<span class="pval">'+_num(v)+'</span><span class="unit">'+unit+'</span>'; };
+  var a = (c.ctl && idx < c.ctl.length) ? c.ctl[idx] : null;
+  if (!dual){ var arm = singleArm || 'ctl'; var v = (c[arm] && idx < c[arm].length) ? c[arm][idx] : null;
+    return '<td class="vcell" data-arm="'+(arm==='ctl'?'A':'B')+'" '+ids+'>'+one(v)+'</td>'; }
+  var b = (c.exp && idx < c.exp.length) ? c.exp[idx] : null;
+  var d;
+  if (a === null || b === null || a === 0 || a === undefined || b === undefined){
+    d = '<td class="dcell" data-metric="'+metric+'">–</td>';
+  } else {
+    var dpct = (b-a)/a*100, improved = goodPos ? (dpct > 0) : (dpct < 0);
+    var vr = improved ? "--good" : "--bad";
+    d = '<td class="dcell" data-metric="'+metric+'"><span class="dval" style="color:var('+vr+')">'+_pct(dpct)+'</span></td>';
+  }
+  return '<td class="grpl vcell" data-arm="A" '+ids+'>'+one(a)+'</td>'
+       + '<td class="vcell" data-arm="B" '+ids+'>'+one(b)+'</td>'+d;
+}
+function _elapsed_cell(timing, dual, stall, soloIdx, singleArm){
+  var pct = STALL_PCT[stall];
+  var solo = (soloIdx !== null && soloIdx !== undefined);
+  // A selected run shows that run's elapsed (no ±); aggregate shows mean ±std.
+  var val = function(m, sd){ return '<span class="pval">'+Math.round(m)+'</span>'
+    + (sd ? '<span class="sd">±'+Math.round(sd)+'</span>' : ''); };
+  var pick = function(arm){
+    var cc = timing[arm][pct];
+    if (solo){ var pr = cc && cc.perRun; return [(pr && soloIdx < pr.length) ? pr[soloIdx] : null, 0]; }
+    return [cc ? cc.mean : null, cc ? cc.std : 0];
+  };
+  if (!dual){ var one = pick(singleArm || 'ctl');
+    return (one[0] == null) ? "–" : val(one[0],one[1])+'<span class="unit">s</span>'; }
+  var A = pick('ctl'), B = pick('exp');
+  if (A[0] == null && B[0] == null) return "–";
+  if (A[0] != null && B[0] != null) return val(A[0],A[1])+' / '+val(B[0],B[1])+'<span class="unit">s</span>';
+  return (A[0] != null ? val(A[0],A[1]) : val(B[0],B[1]))+'<span class="unit">s</span>';
+}
+function op_table(op, cells, dual, la, lb, timing, soloIdx, armMode){
+  var solo = (soloIdx !== null && soloIdx !== undefined);
+  // armMode (dual only): 'both' -> A|B|Δ columns; 'A'/'B' -> just that arm.
+  var effDual = dual && (armMode === undefined || armMode === 'both');
+  var singleArm = (armMode === 'A') ? 'ctl' : (armMode === 'B') ? 'exp' : null;
+  var out = ['<table class="tbl">'];
+  if (effDual){
+    out.push('<thead><tr><th class="l" rowspan="2">stage</th><th class="elap" rowspan="2">elapsed</th>');
+    MAIN_METRICS.forEach(function(m){ out.push('<th colspan="3" class="grp" data-metric="'+m+'">'+m+'</th>'); });
+    out.push('</tr><tr>');
+    MAIN_METRICS.forEach(function(m){
+      out.push('<th class="grpl" data-metric="'+m+'">'+esc(la)+'</th><th data-metric="'+m+'">'+esc(lb)+'</th><th data-metric="'+m+'">Δ (p)</th>');
+    });
+    out.push('</tr></thead><tbody>');
+  } else {
+    var lab = singleArm === 'exp' ? lb : la;
+    out.push('<thead><tr><th class="l">stage</th><th class="elap">elapsed</th>');
+    MAIN_METRICS.forEach(function(m){ out.push('<th data-metric="'+m+'">'+m+(dual?' <span class="muted">('+esc(lab)+')</span>':'')+'</th>'); });
+    out.push('</tr></thead><tbody>');
+  }
+  STALLS.forEach(function(stall){
+    out.push('<tr><td class="l stage">'+STALL_PCT[stall]+'%</td><td class="elap">'+_elapsed_cell(timing,effDual,stall,soloIdx,singleArm)+'</td>');
+    MAIN_METRICS.forEach(function(metric){
+      var c = cells[CK(op,metric,stall)];
+      out.push(solo ? _group_cells_run(c, effDual, op, metric, STALL_PCT[stall], soloIdx, singleArm)
+                    : _group_cells(c.stats, effDual, op, metric, STALL_PCT[stall], singleArm));
+    });
+    out.push('</tr>');
+  });
+  out.push('</tbody></table>');
+  return out.join("");
+}
+// ---- Time-anchored tables (elapsed rows, not download-% stages) -------------
+// Rows are fixed elapsed points within the (mean) restore duration, plus restore
+// complete and +1m post; values are the latency interpolated at that time and the
+// download % reached by then. "30% downloaded" isn't special — a minute of
+// restore spent is, and the % it reached is the outcome (the "download" column).
+function _iXY(arr, t){ // arr: [{x,y}] sorted by x
+  if (!arr || !arr.length || t < arr[0].x || t > arr[arr.length-1].x) return null;
+  for (var i=1;i<arr.length;i++){ if (arr[i].x >= t){ var a=arr[i-1], b=arr[i];
+    return b.x===a.x ? b.y : a.y + (b.y-a.y)*(t-a.x)/(b.x-a.x); } }
+  return arr[arr.length-1].y;
+}
+function _tlabel(t){
+  if (t < 60) return Math.round(t)+"s";
+  var m = Math.round(t/60);
+  if (m < 60) return m+"m";
+  var h = Math.floor(m/60), mm = m%60;
+  return h+"h"+(mm?mm+"m":"");
+}
+function time_rows(refComplete){
+  // Fixed elapsed points strictly within the (mean) restore duration...
+  var base = [0,60,180,300,600,1200,1800,2700,3600];   // 0,1,3,5,10,20,30,45,60m
+  var rows = [];
+  base.forEach(function(t){ if (t < refComplete) rows.push({t:t, label:_tlabel(t)}); });
+  for (var t=5400; t < refComplete; t += 1800) rows.push({t:t, label:_tlabel(t)});   // then every 30m
+  // ...then restore-complete and +1m, anchored PER RUN at its own 100% time (not a
+  // shared clock), so "done" is genuinely at completion (download 100%).
+  rows.push({special:"done",   label:"done"});
+  rows.push({special:"done1m", label:"done+1m"});
+  return rows;
+}
+function _dlCrossT(dc, pc){ if (!dc || !dc.length) return null;
+  for (var i=0;i<dc.length;i++){ if (dc[i].y >= pc){ if (i===0) return dc[0].x; var a=dc[i-1], b=dc[i];
+    return b.y===a.y ? b.x : a.x + (b.x-a.x)*(pc-a.y)/(b.y-a.y); } } return null; }
+// Elapsed at which to read run `i` of `arm` for this row: a fixed time, or that
+// run's own download-complete (+60s for done+1m). null if the run never completed.
+function _rowTimeRun(sop, arm, i, row){
+  if (!row.special) return row.t;
+  var comp = _dlCrossT((sop.dlRuns[arm]||[])[i], 100);
+  return comp==null ? null : (row.special==="done1m" ? comp+60 : comp);
+}
+// Per-run interpolated latency at the row's time -> a cell shaped like the crossing
+// cells (raw per-run arrays + summary/MWU stats), so _group_cells(_run) render it.
+function _time_cell(sop, metric, row){
+  function vals(arm){ var rr = sop.elRuns[arm+"_"+metric]||[];
+    return rr.map(function(pl,i){ var t=_rowTimeRun(sop,arm,i,row); return t==null?null:_iXY(pl,t); }); }
+  var ctlAll = vals("ctl"), expAll = vals("exp");
+  var ctl = ctlAll.filter(function(v){return v!=null;}), exp = expAll.filter(function(v){return v!=null;});
+  var cs = _summ(ctl), es = _summ(exp);
+  var mw = (ctl.length && exp.length) ? mann_whitney(ctl, exp) : [NAN, NAN, "none"];
+  var dm = (cs.mean!=null && es.mean!=null) ? es.mean-cs.mean : null;
+  var dmp = (dm!=null && cs.mean) ? dm/cs.mean*100.0 : null;
+  return {ctl:ctlAll, exp:expAll, stats:{ctl:cs, exp:es, p:mw[1], delta_mean:dm, delta_mean_pct:dmp}};
+}
+// Per-run download % reached by the row's time -> a cell shaped exactly like a
+// latency _time_cell (per-run arrays + summary/MWU stats), so the same
+// _group_cells(_run) renders it as an A|B|Δ(p) group. On the special rows every
+// run is 100% by construction (each is anchored at its own completion).
+function _dl_cell(sop, row){
+  function vals(arm){ var rr = sop.dlRuns[arm]||[];
+    if (row.special) return rr.map(function(){ return 100; });
+    return rr.map(function(pl){ return _iXY(pl, row.t); }); }
+  var ctlAll = vals("ctl"), expAll = vals("exp");
+  var ctl = ctlAll.filter(function(v){return v!=null;}), exp = expAll.filter(function(v){return v!=null;});
+  var cs = _summ(ctl), es = _summ(exp);
+  var mw = (ctl.length && exp.length) ? mann_whitney(ctl, exp) : [NAN, NAN, "none"];
+  var dm = (cs.mean!=null && es.mean!=null) ? es.mean-cs.mean : null;
+  var dmp = (dm!=null && cs.mean) ? dm/cs.mean*100.0 : null;
+  return {ctl:ctlAll, exp:expAll, stats:{ctl:cs, exp:es, p:mw[1], delta_mean:dm, delta_mean_pct:dmp}};
+}
+function op_time_table(op, sop, dual, la, lb, timeRows, soloIdx, armMode){
+  var solo = (soloIdx!=null && soloIdx!==undefined);
+  var effDual = dual && (armMode===undefined || armMode==="both");
+  var singleArm = (armMode==="A") ? "ctl" : (armMode==="B") ? "exp" : null;
+  var dlOpts = {unit:"%", higherBetter:true};   // download: more is better -> green
+  var cols = ["download"].concat(MAIN_METRICS);
+  var out = ['<table class="tbl">'];
+  if (effDual){
+    out.push('<thead><tr><th class="l" rowspan="2">time</th>');
+    cols.forEach(function(m){ out.push('<th colspan="3" class="grp" data-metric="'+m+'">'+m+'</th>'); });
+    out.push('</tr><tr>');
+    cols.forEach(function(m){
+      out.push('<th class="grpl" data-metric="'+m+'">'+esc(la)+'</th><th data-metric="'+m+'">'+esc(lb)+'</th><th data-metric="'+m+'">Δ (p)</th>');
+    });
+    out.push('</tr></thead><tbody>');
+  } else {
+    var lab = singleArm==="exp" ? lb : la;
+    out.push('<thead><tr><th class="l">time</th>');
+    cols.forEach(function(m){ out.push('<th data-metric="'+m+'">'+m+(dual?' <span class="muted">('+esc(lab)+')</span>':'')+'</th>'); });
+    out.push('</tr></thead><tbody>');
+  }
+  timeRows.forEach(function(row){
+    var stageId = (row.t != null ? row.t : row.special);
+    out.push('<tr><td class="l stage">'+esc(row.label)+'</td>');
+    var dc = _dl_cell(sop, row);
+    out.push(solo ? _group_cells_run(dc, effDual, op, "download", stageId, soloIdx, singleArm, dlOpts)
+                  : _group_cells(dc.stats, effDual, op, "download", stageId, singleArm, dlOpts));
+    MAIN_METRICS.forEach(function(metric){
+      var c = _time_cell(sop, metric, row);
+      out.push(solo ? _group_cells_run(c, effDual, op, metric, stageId, soloIdx, singleArm)
+                    : _group_cells(c.stats, effDual, op, metric, stageId, singleArm));
+    });
+    out.push('</tr>');
+  });
+  out.push('</tbody></table>');
+  return out.join("");
+}
+function prov_table(ctx){
+  var details = ctx.prov_details;   // [[label, detail], ...]
+  var narms = details.length;
+  // Single-arm reports get an extra "compare" column where B would sit: paste another
+  // report's link there to open the two side by side (wired in the bootstrap).
+  var showCompare = narms < 2;
+  var effArmCols = narms + (showCompare ? 1 : 0);
+  var totalCols = 1 + effArmCols;
+  var armw = pyRound(76.0/effArmCols, 2);
+  var out = ['<table class="tbl prov"><colgroup><col style="width:24%">'];
+  for (var i=0;i<effArmCols;i++) out.push('<col style="width:'+armw+'%">');
+  out.push('</colgroup><thead><tr><th class="l">detail</th>');
+  details.forEach(function(pair, i){
+    var label = pair[0], d = pair[1];
+    // Header is the arm label (A/B) + color chip. When comparing arms, an "↗" opens
+    // just that arm as its own single-arm report in a new tab (href wired in the
+    // bootstrap). The source directory is a roachtest param leaf that doesn't identify
+    // the arm; the distinguishing provenance (test / SHA / branch / settings) is below.
+    var open = !showCompare
+      ? ' <a class="openarm" data-openarm="'+i+'" target="_blank" rel="noopener" title="open '
+        + esc(label)+' as its own report" style="color:var('+d.hue+')">↗</a>'
+      : '';
+    out.push('<th class="l"><span class="chip" style="background:var('+d.hue+')"></span>'+esc(label)+open+'</th>');
+  });
+  if (showCompare){
+    out.push('<th class="l"><span class="chip" style="background:var(--lh-p95)"></span>'
+      + '<a class="openarm" data-cmp href="#" style="color:var(--lh-p95)">+ compare ↗</a>'
+      + '<input class="cmpbox" data-cmpbox type="text" placeholder="paste a report link…" style="display:none">'
+      + '</th>');
+  }
+  out.push('</tr></thead><tbody>');
+  function _plain(s){
+    s = s.replace(/<br>/g,"; ").replace(/<[^>]+>/g,"");
+    s = s.replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&quot;/g,'"').replace(/&#x27;/g,"'");
+    return s.trim();
+  }
+  function row(name, render, copytext, merge){
+    merge = merge === undefined ? true : merge;
+    var vals = details.map(function(pair){ return render(pair[1]); });
+    var copies = details.map(function(pair){ return copytext ? copytext(pair[1]) : _plain(render(pair[1])); });
+    if (merge && vals.length > 1 && vals.every(function(v){return v===vals[0];})){
+      return '<tr><td class="l mid copyable" colspan="'+totalCols+'" data-copy="'+esc(copies[0])
+        +'"><span class="rowlabel">'+name+'</span>'+vals[0]+'</td></tr>';
+    }
+    var body = "";
+    for (var i=0;i<vals.length;i++) body += '<td class="l copyable" data-copy="'+esc(copies[i])+'">'+vals[i]+'</td>';
+    if (showCompare) body += '<td class="l"></td>';   // empty cell under the compare column
+    return '<tr><td class="l">'+name+'</td>'+body+'</tr>';
+  }
+  function sha_cell(d){
+    if (!d.sha_short) return "—";
+    var full = d.sha_full || d.sha_short;
+    var s = '<code class="copysha" data-copy="'+esc(full)+'" title="click to copy '+esc(full)+'">'+esc(d.sha_short)+'</code>';
+    if (d.branch) s += ' <code class="branch">'+esc(d.branch)+'</code>';
+    return s;
+  }
+  function settings_cell(d){
+    var s = d.settings;
+    if (!s || !Object.keys(s).length) return "—";
+    return Object.keys(s).sort().map(function(k){ return '<code>'+esc(k)+' = '+esc(s[k])+'</code>'; }).join("<br>");
+  }
+  function ran_built(d){
+    var ran = esc(d.time || "—");
+    return d.build_time ? (ran+' ('+esc(d.build_time)+')') : ran;
+  }
+  out.push(row("runs", function(d){return esc(d.n);}, function(d){return String(d.n);}, false));
+  out.push(row("ran (built)", ran_built));
+  out.push(row("test", function(d){return '<code>'+esc(d.test || "—")+'</code>';}));
+  out.push(row("SHA", sha_cell, function(d){return d.sha_full || d.sha_short || "";}));
+  out.push(row("commit", function(d){return d.commit ? esc(d.commit) : "—";}));
+  out.push(row("non-default settings", settings_cell));
+  out.push('</tbody></table>');
+  return out.join("");
+}
+// Elapsed to reach each download % per arm. Follows the arm cycle: 'both' shows
+// A | B | Δ | p; a single arm ('A'/'B') shows just that arm's elapsed.
+function time_to_stall_table(ctx, armMode){
+  if (!ctx.dual || !ctx.time_to_stall.length) return "";
+  var la = ctx.control_label, lb = ctx.experiment_label;
+  var both = (armMode === undefined || armMode === 'both');
+  // ±std only when the arm has more than one run.
+  var secCell = function(v, sd, n){ if (v === null || v === undefined) return "–";
+    var s = (n > 1) ? '<span class="sd">±'+(sd||0).toFixed(0)+'</span>' : "";
+    return '<span class="pval">'+v.toFixed(0)+'</span><span class="unit">s</span>'+s; };
+  var out = ['<table class="tbl"><thead><tr><th class="l">downloaded</th>'];
+  if (both) out.push('<th>'+esc(la)+' elapsed</th><th>'+esc(lb)+' elapsed</th><th>Δ s</th><th>Δ%</th><th>p</th>');
+  else out.push('<th>'+esc(armMode === 'A' ? la : lb)+' elapsed</th>');
+  out.push('</tr></thead><tbody>');
+  ctx.time_to_stall.forEach(function(r){
+    if (!both){
+      var one = armMode === 'A' ? secCell(r.a, r.a_std, ctx.n_ctl) : secCell(r.b, r.b_std, ctx.n_exp);
+      out.push('<tr><td class="l stage">'+r.pct+'%</td><td>'+one+'</td></tr>');
+      return;
+    }
+    var p = r.p;
+    var sig = (!isnan(p) && p < ALPHA);
+    var a = secCell(r.a, r.a_std, ctx.n_ctl), b = secCell(r.b, r.b_std, ctx.n_exp);
+    var dsec, dpct;
+    if (r.dsec === null || r.dsec === undefined){ dsec = "–"; dpct = "–"; }
+    else {
+      var vr = r.dsec < 0 ? "--good" : "--bad";
+      dsec = '<span style="color:var('+vr+')">'+_sms(r.dsec)+'</span>';
+      dpct = '<span style="color:var('+vr+')">'+_pct(r.dpct)+'</span>';
+    }
+    var pcell;
+    if (isnan(p)) pcell = "–";
+    else {
+      var ptxt = p >= 1e-4 ? _g2(p) : _e0(p);
+      pcell = sig ? '<span class="psig">'+ptxt+'</span>' : '<span class="pns">'+ptxt+'</span>';
+    }
+    var rowcls = sig ? "" : ' class="dim"';
+    out.push('<tr'+rowcls+'><td class="l stage">'+r.pct+'%</td><td>'+a+'</td><td>'+b+'</td><td>'+dsec+'</td><td>'+dpct+'</td><td class="pcol">'+pcell+'</td></tr>');
+  });
+  out.push('</tbody></table>');
+  return out.join("");
+}
+
+// --------------------------------------------------------------------------
+// Analysis driver (port of analyze(); takes arms instead of dirs)
+// arms: [{label,name,sha,settings,buildTime,runTime,test,commit,branch,
+//         runs:[rawSamplesArray, ...]}]  (arm B optional)
+// --------------------------------------------------------------------------
+
+function analyze(arms){
+  var dual = arms.length > 1;
+
+  function loadArm(arm){
+    var runs = [];
+    (arm.runs || []).forEach(function(raw){
+      var s = parse_run(raw);
+      if (s.length) runs.push(s);
+    });
+    return runs;
+  }
+  var ctl_runs = loadArm(arms[0]);
+  if (!ctl_runs.length) throw new Error("arm A has no runs with usable samples");
+  var exp_runs = [];
+  if (dual){
+    exp_runs = loadArm(arms[1]);
+    if (!exp_runs.length) throw new Error("arm B has no runs with usable samples");
+  }
+
+  var prov_ctl = arms[0], prov_exp = dual ? arms[1] : {settings:{}};
+  var cl = arms[0].label || "A";
+  var el = dual ? (arms[1].label || "B") : null;
+
+  var bc = build_cells(ctl_runs, exp_runs);
+  var cells = bc.cells, order = bc.order;
+  order.forEach(function(k){ compute_cell_stats(cells[k], ctl_runs, exp_runs); });
+
+  // Exploratory FDR: all latency cells NOT in the primary family.
+  var primary_keys = [];
+  PRIMARY_OPS.forEach(function(op){ PRIMARY_STALLS.forEach(function(s){ PRIMARY_METRICS.forEach(function(m){
+    primary_keys.push(CK(op,m,s));
+  }); }); });
+  var primarySet = {}; primary_keys.forEach(function(k){ primarySet[k]=1; });
+  var expl_p = [], valid_expl = [];
+  order.forEach(function(k){
+    if (primarySet[k]) return;
+    var p = cells[k].stats.p;
+    if (!isnan(p)){ expl_p.push(p); valid_expl.push(k); }
+  });
+  var qvals = bh_fdr(expl_p);
+  for (var vi=0;vi<valid_expl.length;vi++) cells[valid_expl[vi]].stats._q = qvals[vi];
+
+  // ---- Comparison-only summaries (dual mode) ----
+  var neg_control = null, qps_status = null, confounds = [], conclusion = null;
+  if (dual){
+    var ng_rows = [], ng_hard_fail = false, ng_noisy = false;
+    ["agg","stockLevel"].forEach(function(op){
+      LAT_METRICS.forEach(function(metric){
+        var st = cells[CK(op,metric,"download_0")].stats;
+        var dp = st.delta_pct;
+        var within = (dp !== null && Math.abs(dp) <= NEG_CONTROL_MARGIN_PCT);
+        var overlap = st.overlap;
+        var status;
+        if (within) status = "PASS";
+        else if (overlap){ status = "NOISY"; ng_noisy = true; }
+        else { status = "FAIL"; ng_hard_fail = true; }
+        ng_rows.push({op:op, metric:metric, ctl:st.ctl.median, exp:st.exp.median, dpct:dp,
+          within:within, overlap:overlap, status:status});
+      });
+    });
+    neg_control = {pass:!ng_hard_fail, noisy:ng_noisy, rows:ng_rows};
+
+    var agg_dpcts = [];
+    STALLS.forEach(function(stall){
+      var cq = qps_median(ctl_runs,"agg",stall), eq = qps_median(exp_runs,"agg",stall);
+      if (cq && eq) agg_dpcts.push(Math.abs((eq-cq)/cq*100.0));
+    });
+    var perop_dpcts = [];
+    OPS.forEach(function(op){ if (op==="agg") return;
+      STALLS.forEach(function(stall){
+        var cq = qps_median(ctl_runs,op,stall), eq = qps_median(exp_runs,op,stall);
+        if (cq && eq) perop_dpcts.push(Math.abs((eq-cq)/cq*100.0));
+      });
+    });
+    var max_agg = agg_dpcts.length ? Math.max.apply(null,agg_dpcts) : null;
+    qps_status = {max_abs_dpct:max_agg,
+      max_perop_abs_dpct:(perop_dpcts.length?Math.max.apply(null,perop_dpcts):null),
+      equivalent:(max_agg !== null && max_agg <= EQUIV_MARGIN_PCT)};
+
+    function _qstr(st){
+      var q = st._q;
+      if (q === null || q === undefined || isnan(q)) return "n/a";
+      return _g2(q) + (q < FDR_Q ? " (survives FDR)" : " (NOT FDR-sig)");
+    }
+    POINT_OPS.forEach(function(op){ LAT_METRICS.forEach(function(metric){ STALLS.forEach(function(stall){
+      var st = cells[CK(op,metric,stall)].stats;
+      if (!isnan(st.p) && st.p < ALPHA && st.delta_pct !== null && Math.abs(st.delta_pct) > EQUIV_MARGIN_PCT){
+        confounds.push("point-op "+op+" "+metric+"@"+STALL_PCT[stall]+"% moved (Δ%="
+          +(st.delta_pct>=0?"+":"")+st.delta_pct.toFixed(1)+", exact p="+_g2(st.p)+", FDR q="+_qstr(st)
+          +") — download ordering should not move point ops.");
+      }
+    }); }); });
+    ["download_0","download_100"].forEach(function(stall){
+      SCAN_OPS.concat(MIXED_OPS).concat(["agg"]).forEach(function(op){
+        PRIMARY_METRICS.forEach(function(metric){
+          var st = cells[CK(op,metric,stall)].stats;
+          if (!isnan(st.p) && st.p < ALPHA && st.delta_pct !== null && Math.abs(st.delta_pct) > EQUIV_MARGIN_PCT){
+            var tag = stall === "download_0" ? "negative control" : "steady state";
+            confounds.push(tag+" "+op+" "+metric+"@"+STALL_PCT[stall]+"% moved (Δ%="
+              +(st.delta_pct>=0?"+":"")+st.delta_pct.toFixed(1)+", exact p="+_g2(st.p)+", FDR q="+_qstr(st)+").");
+          }
+        });
+      });
+    });
+
+    var prim_sig = [];
+    primary_keys.forEach(function(k){
+      var st = cells[k].stats;
+      if (!isnan(st.p) && st.p < ALPHA && st.ratio !== null) prim_sig.push([k, st]);
+    });
+    if (prim_sig.length){
+      var improved = prim_sig.filter(function(ks){ return ks[1].ratio < 1; });
+      var best = prim_sig.reduce(function(a,b){ return b[1].ratio < a[1].ratio ? b : a; });
+      var pk = best[0], bst = best[1];
+      var parts = pk.split("|");   // op|metric|stall
+      conclusion = "Primary family: "+prim_sig.length+"/"+primary_keys.length+" cells significant (exact p<"
+        +ALPHA+"); "+improved.length+" improvements. Largest: "+parts[0]+" "+parts[1]+"@"+STALL_PCT[parts[2]]
+        +"% Δ%="+bst.delta_pct.toFixed(0)+" (ratio "+bst.ratio.toFixed(2)+"x).";
+    } else {
+      conclusion = "Primary family: no cells reach exact p<"+ALPHA+".";
+    }
+  }
+
+  // ---- Details table (from arm provenance fields; "—" when absent) ----
+  function diff_settings(mine, other){
+    mine = mine || {};
+    if (!other) { var cp={}; for (var k in mine) cp[k]=mine[k]; return cp; }
+    var out = {};
+    for (var k2 in mine){ if (other[k2] !== mine[k2]) out[k2] = mine[k2]; }
+    return out;
+  }
+  function _arm_detail(arm, label, hue, otherProv){
+    var sha = arm.sha || null;
+    var settings = diff_settings(arm.settings, otherProv ? otherProv.settings : null);
+    var filtered = {};
+    for (var k in settings){ if (!HARNESS_SETTINGS[k]) filtered[k] = settings[k]; }
+    return {label:label, name:(arm.name||"—"), n:(arm.runs?arm.runs.length:0), hue:hue,
+      time:(arm.runTime||null), build_time:(arm.buildTime||null),
+      test:(arm.test||arm.name||null), sha_full:sha,
+      sha_short:(sha?sha.slice(0,10):null), commit:(arm.commit||null), branch:(arm.branch||null),
+      settings:filtered};
+  }
+  var prov_details = [[cl, _arm_detail(prov_ctl, cl, "--ctl-p95", dual?prov_exp:null)]];
+  if (dual) prov_details.push([el, _arm_detail(prov_exp, el, "--lh-p95", prov_ctl)]);
+
+  // ---- Timing (elapsed-to-stall) from crossings ----
+  var stall_pcts = [50,90,100];
+  function _stall_elapsed(runs, pct){
+    var out = [];
+    runs.forEach(function(run){ var s = crossing_sample(run, pct); if (s !== null) out.push(s.el); });
+    return out;
+  }
+  function _agg_timing(runs){
+    var out = {};
+    stall_pcts.forEach(function(pct){
+      out[pct] = _summ(_stall_elapsed(runs, pct));
+      // Per-run elapsed by run index (null if that run never crossed), so a
+      // selected run's elapsed can be shown in the table.
+      out[pct].perRun = runs.map(function(r){ var s = crossing_sample(r, pct); return s !== null ? s.el : null; });
+    });
+    return out;
+  }
+  var timing = {ctl:_agg_timing(ctl_runs), exp:_agg_timing(exp_runs)};
+
+  var time_to_stall = [];
+  if (dual){
+    stall_pcts.forEach(function(pct){
+      var cv = _stall_elapsed(ctl_runs, pct), ev = _stall_elapsed(exp_runs, pct);
+      var mw = (cv.length && ev.length) ? mann_whitney(cv, ev) : [NAN, NAN, "none"];
+      var ct = timing.ctl[pct], et = timing.exp[pct];
+      var dsec = null, dpct = null;
+      if (ct.mean !== null && et.mean !== null){
+        dsec = et.mean - ct.mean;
+        if (ct.mean) dpct = dsec/ct.mean*100.0;
+      }
+      time_to_stall.push({pct:pct, a:ct.mean, a_std:ct.std, b:et.mean, b_std:et.std,
+        dsec:dsec, dpct:dpct, p:mw[1]});
+    });
+  }
+
+  // ---- Plot series (dense) ----
+  var all_runs = ctl_runs.concat(exp_runs);
+  var max_el = 0.0, _elset = {};
+  all_runs.forEach(function(run){ run.forEach(function(s){ if (s.el > max_el) max_el = s.el; _elset[s.el]=1; }); });
+  // Grid = the actual sample elapsed times (union across runs), not a fixed step, so
+  // every emitted sample shows as a point — a denser early cadence (e.g. an added 15s
+  // sample) isn't lost to a coarse grid. resample() interpolates each run onto it.
+  var el_grid = Object.keys(_elset).map(Number).sort(function(a,b){return a-b;});
+  if (!el_grid.length) el_grid = [0];
+  var pct_grid = [];   // 0..100 step PCT_GRID_STEP (Python range(0, 102, 2))
+  for (var pg=0; pg <= 100; pg += PCT_GRID_STEP) pct_grid.push(pg);
+  var series = {};
+  OPS.forEach(function(op){ series[op] = build_series(op, ctl_runs, exp_runs, dual, el_grid, pct_grid); });
+  var xmax_el = el_grid.length ? el_grid[el_grid.length-1]*1.0 : 1.0;
+
+  // Time-anchored table rows: fixed elapsed points within the mean restore
+  // duration (across all runs, both arms), + restore complete + 1m post. Fixed
+  // regardless of arm/run selection; values interpolate the selection at each time.
+  var completes = all_runs.map(function(r){ var s = crossing_sample(r, 100);
+    if (s) return s.el; var mx=0; r.forEach(function(x){ if (x.el>mx) mx=x.el; }); return mx; });
+  var refComplete = completes.length ? completes.reduce(function(a,b){return a+b;},0)/completes.length : max_el;
+  var timeRows = time_rows(refComplete);
+
+  // Chart payload + labels in the report's op order.
+  var op_order = ["agg","stockLevel","orderStatus","delivery","newOrder","payment"];
+  var chartData = {}; op_order.forEach(function(op){ chartData[op] = series[op]; });
+  var labels = {ctl:cl, exp:(el||"B")};
+
+  return {
+    cells:cells, order:order, dual:dual, control_label:cl, experiment_label:el,
+    prov_ctl:prov_ctl, prov_exp:prov_exp, prov_details:prov_details,
+    n_ctl:ctl_runs.length, n_exp:exp_runs.length,
+    neg_control:neg_control, qps_status:qps_status, confounds:confounds,
+    primary_conclusion:conclusion, primary_keys:primary_keys,
+    timing:timing, time_to_stall:time_to_stall, series:series, xmax_el:xmax_el,
+    refComplete:refComplete, timeRows:timeRows,
+    op_order:op_order, chartData:chartData, labels:labels,
+  };
+}
+
+// --------------------------------------------------------------------------
+// data.json shape (port of write_json), for equivalence testing.
+// --------------------------------------------------------------------------
+function clean(x){ return isnan(x) ? null : x; }
+function data_json(ctx){
+  var out = {
+    control_label:ctx.control_label, experiment_label:ctx.experiment_label,
+    n_control:ctx.n_ctl, n_experiment:ctx.n_exp,
+    control_sha:(ctx.prov_ctl.sha||null), experiment_sha:(ctx.prov_exp?ctx.prov_exp.sha||null:null),
+    negative_control:ctx.neg_control, qps_status:ctx.qps_status, confounds:ctx.confounds,
+    thresholds:{neg_control_margin_pct:NEG_CONTROL_MARGIN_PCT, equiv_margin_pct:EQUIV_MARGIN_PCT,
+      min_reliable_samples:MIN_RELIABLE_SAMPLES, alpha:ALPHA, fdr_q:FDR_Q},
+    timing:{}, time_to_stall:[], cells:[], series:ctx.series,
+  };
+  ["ctl","exp"].forEach(function(arm){
+    var t = ctx.timing[arm], o = {};
+    Object.keys(t).forEach(function(pct){ o[String(pct)] = {n:t[pct].n, mean_s:t[pct].mean, std_s:t[pct].std}; });
+    out.timing[arm] = o;
+  });
+  ctx.time_to_stall.forEach(function(r){
+    out.time_to_stall.push({stall_pct:r.pct, a_elapsed_s:r.a, a_std_s:r.a_std, b_elapsed_s:r.b,
+      b_std_s:r.b_std, delta_s:r.dsec, delta_pct:r.dpct, exact_p:clean(r.p)});
+  });
+  ctx.order.forEach(function(k){
+    var c = ctx.cells[k], st = c.stats;
+    function armObj(s){ return {n:s.n, mean:s.mean, std:s.std, median:s.median, q1:s.q1, q3:s.q3,
+      min:s.min, max:s.max, values:s.vals}; }
+    out.cells.push({op:c.op, metric:c.metric, stall:c.stall, stall_pct:STALL_PCT[c.stall],
+      primary:is_primary(c.op,c.metric,c.stall),
+      control:armObj(st.ctl), experiment:armObj(st.exp),
+      U:clean(st.U), exact_p:clean(st.p), mwu_method:st.method,
+      hl:clean(st.hl), hl_ci:[clean(st.hl_lo), clean(st.hl_hi)],
+      ratio:st.ratio, delta_pct_median:st.delta_pct, delta_mean:st.delta_mean,
+      delta_mean_pct:st.delta_mean_pct, fdr_q:st._q, approx_samples:st.n_samp, reliable:st.reliable});
+  });
+  return out;
+}
+
+// --------------------------------------------------------------------------
+// Body HTML (port of render_html's body: details, Duration, analysis, control
+// bar, op sections). Returns the innerHTML string; the caller sets globals and
+// runs the chart JS afterward.
+// --------------------------------------------------------------------------
+function render_body(ctx){
+  var dual = ctx.dual, cl = ctx.control_label, el = ctx.experiment_label;
+  var op_order = ctx.op_order;
+  var A = [];
+  A.push("<section><h2>details</h2>");
+  A.push(prov_table(ctx));
+  A.push("</section>");
+
+  // Control bar: latency metrics, scale, x-mode, plot selection, arms, and
+  // "copy link" (encodes the arms in the URL). It sits above every plot it drives
+  // — including the restore-progress plot below, whose arm/run selection it also
+  // controls. The elapsed window is zoomed by dragging on a plot, not from here.
+  A.push("<div class='ctrl'>");
+  A.push("<span class='cl'>latency</span><span class='seg'>");
+  A.push("<button data-pct='p50' class='on'>p50</button>");
+  A.push("<button data-pct='p95'>p95</button>");
+  A.push("<button data-pct='p99' class='on'>p99</button>");
+  A.push("<button data-qps>qps</button></span>");
+  A.push("<span class='seg'>");   // linear/log sits right after latency, no label
+  A.push("<button data-scale='linear' class='on'>linear</button>");
+  A.push("<button data-scale='log'>log</button></span>");
+  A.push("<span class='cl'>X</span><span class='seg'>");
+  A.push("<button data-xmode='elapsed' class='on'>elapsed</button>");
+  A.push("<button data-xmode='pct'>% downloaded</button></span>");
+  // Plot: one dropdown — summary (mean + band) | all (mean + per-run lines) | a
+  // specific run. Only shown when there's more than one run to distinguish; with a
+  // single run summary/all/run are all the same, so the picker is pointless. Options
+  // beyond summary|all are added by the chart JS when a single arm is in view.
+  if (Math.max(ctx.n_ctl||0, ctx.n_exp||0) > 1){
+    A.push("<span class='cl'>plot</span>");
+    A.push("<select class='plotsel' data-plotsel><option value='avg'>summary</option><option value='all'>all</option></select>");
+  }
+  if (dual){
+    // Single cycling control: A+B -> A -> B -> A+B (can't turn both off).
+    A.push("<span class='cl'>arms</span><button class='armcycle' data-armcycle>"+esc(cl)+" + "+esc(el)+"</button>");
+  }
+  A.push("<button class='copylink' data-copylink>copy link</button>");
+  A.push("</div>");
+
+  // Restore Progress shows whenever there's download data (single-arm too, not just
+  // A/B). The chart is always drawn by the chart JS; the elapsed-to-% duration table
+  // is an A/B comparison, so it's only added when dual.
+  var tts = time_to_stall_table(ctx);
+  var s0 = ctx.series && (ctx.series.agg || ctx.series[op_order[0]]);
+  var hasDl = !!(s0 && s0.dl && Object.keys(s0.dl).some(function(a){ return (s0.dl[a]||[]).length; }));
+  if (hasDl || tts){
+    A.push("<section><h2>Restore Progress</h2>");
+    // % downloaded over elapsed time. Rendered by the chart JS so it obeys the plot
+    // controls (summary/all/run) and arm cycle; a 100% diamond marks each arm's finish.
+    A.push("<div class='chart dlchart' data-dl='1'></div>");
+    if (tts){
+      // Wrapped so refreshTables can re-render it on arm cycle (like the op tables).
+      A.push("<div class='dltbl'>"+tts+"</div>");
+      A.push("<p class='caveat'>elapsed = wall-clock from download resume to the first "
+        + "sample crossing each download %. If the arms download at different rates, "
+        + "compare latency at equal % (x-axis toggle), not equal elapsed.</p>");
+    }
+    A.push("</section>");
+  }
+
+  function op_heading(op){
+    if (op === "agg") return "Overall Workload Latency";
+    return op[0].toUpperCase()+op.slice(1)+" Query Latency";
+  }
+  op_order.forEach(function(op){
+    var big = (op === "agg");
+    A.push("<section>");
+    A.push("<h2>"+esc(op_heading(op))+"</h2>");
+    A.push("<div class='chart' data-op='"+esc(op)+"' data-big='"+(big?1:0)+"'>"
+      + bake_svg(op, ctx.series[op], big) + "</div>");
+    A.push("<div class='optbl' data-op='"+esc(op)+"'>"+op_time_table(op, ctx.series[op], dual, cl, el || "B", ctx.timeRows)+"</div>");
+    A.push("</section>");
+  });
+  return A.join("");
+}
+
+// --------------------------------------------------------------------------
+// Self-test (mirrors self_test() in the Python).
+// --------------------------------------------------------------------------
+function _approx(a, b, tol){ tol = tol === undefined ? 1e-9 : tol; return Math.abs(a-b) <= tol; }
+function self_test(){
+  var fails = [];
+  function check(name, cond){
+    if (cond) console.log("  PASS  "+name);
+    else { console.log("  FAIL  "+name); fails.push(name); }
+  }
+  check("median odd", median([3,1,2]) === 2);
+  check("median even", median([1,2,3,4]) === 2.5);
+  check("quantile q1 type7", _approx(quantile([1,2,3,4],0.25), 1.75));
+  check("quantile q3 type7", _approx(quantile([1,2,3,4],0.75), 3.25));
+
+  var mw = mann_whitney([1,2,3],[4,5,6]);
+  check("MWU exact separation n=3 method", mw[2] === "exact");
+  check("MWU exact separation n=3 p=0.1", _approx(mw[1], 0.1));
+  check("MWU exact separation U=0", _approx(mw[0], 0.0));
+  var mw2 = mann_whitney([1,2,3,4],[5,6,7,8]);
+  check("MWU exact separation n=4 p=2/70", _approx(mw2[1], 2.0/70.0));
+  var mwt = mann_whitney([1,2],[2,3]);
+  check("MWU exact ties p=2/3", _approx(mwt[1], 2.0/3.0));
+  var mwi = mann_whitney([5,5,5],[5,5,5]);
+  check("MWU identical p=1", _approx(mwi[1], 1.0));
+  function rng(a,b){ var o=[]; for (var i=a;i<b;i++) o.push(i); return o; }
+  var mwb = mann_whitney(rng(1,15), rng(15,29));
+  check("MWU large-n uses normal", mwb[2] === "normal");
+  check("MWU large-n separation tiny p", mwb[1] < 0.001);
+
+  var hl = hodges_lehmann([3,4],[1,2]);
+  check("HL estimate = 2.0", _approx(hl[0], 2.0));
+  var hl2 = hodges_lehmann([11,12,13,14],[1,2,3,4]);
+  check("HL pure shift = 10", _approx(hl2[0], 10.0));
+
+  var q2 = bh_fdr([0.005,0.011,0.02,0.04,0.13]);
+  check("BH classic q0", _approx(q2[0], 0.025));
+  check("BH classic q4", _approx(q2[4], 0.13));
+
+  var pts = [[0.0,10.0],[10.0,20.0],[20.0,40.0]];
+  check("interp exact", _interp(pts,10.0) === 20.0);
+  check("interp mid", _approx(_interp(pts,5.0), 15.0));
+  check("interp mid2", _approx(_interp(pts,15.0), 30.0));
+  check("interp below range None", _interp(pts,-1.0) === null);
+  check("interp above range None", _interp(pts,21.0) === null);
+  check("interp single point", _interp([[3.0,7.0]],3.0) === 7.0);
+
+  var lat = {}; lat[LK("a","p50")]=10.0; lat[LK("a","p95")]=20.0; lat[LK("a","p99")]=30.0;
+  lat[LK("b","p50")]=100.0; lat[LK("b","p95")]=200.0; lat[LK("b","p99")]=300.0;
+  var agg = qps_weighted_agg(lat, {a:3.0, b:1.0});
+  check("agg qps sum", _approx(agg.qps, 4.0));
+  check("agg p50 weighted", _approx(agg.p50, (3*10+1*100)/4.0));
+  check("agg none when no qps", qps_weighted_agg(lat, {a:0.0}) === null);
+
+  function mkS(el,pct,p50){ var L={}; L[LK("agg","p50")]=p50; return {el:el,pct:pct,lat:L,qps:{},ctx:{}}; }
+  var run = [mkS(0.0,0.0,100.0), mkS(30.0,0.5,60.0), mkS(60.0,1.0,20.0)];
+  check("crossing 60% -> pct1 sample", crossing_sample(run,60).el === 60.0);
+  check("crossing 30% -> pct.5 sample", crossing_sample(run,30).el === 30.0);
+  check("crossing 0% -> baseline", crossing_sample(run,0).el === 0.0);
+  var rs = resample([run],"agg","p50","el",[0,30,60]);
+  check("resample single run n", rs.every(function(p){return p.n===1;}));
+  check("resample single run std=0", rs.every(function(p){return p.s===0.0;}));
+  check("resample values", JSON.stringify(rs.map(function(p){return p.m;})) === JSON.stringify([100.0,60.0,20.0]));
+  var rs2 = resample([run,run],"agg","p50","el",[30]);
+  check("resample two identical runs n=2 std0", rs2[0].n===2 && rs2[0].s===0.0);
+  var dl = download_curve([run],[0,30,60]);
+  check("download curve pct", JSON.stringify(dl.map(function(p){return p.y;})) === JSON.stringify([0.0,50.0,100.0]));
+  var ce = crossings_elapsed([run]);
+  check("crossings elapsed 60->60s", ce[60] === 60.0);
+
+  var bs = build_series("agg",[run],[],false,[0,30,60],[0,50,100]);
+  var pc = bs.pc["ctl_p50"];
+  check("pc points carry elapsed", pc.every(function(p){return "e" in p;}));
+  var at50 = pc.filter(function(p){return p.x===50;})[0];
+  check("pc elapsed at 50% == 30s", at50.e === 30.0);
+
+  console.log("");
+  if (fails.length){ console.log("SELF-TEST FAILED: "+fails.length+" failure(s): "+JSON.stringify(fails)); return 1; }
+  console.log("SELF-TEST PASSED (all checks green)");
+  return 0;
+}
+
+// ---- Export surface (node: module.exports; browser: window.ORCORE) ----
+var CORE = {
+  OPS:OPS, LAT_METRICS:LAT_METRICS, STALLS:STALLS, STALL_PCT:STALL_PCT,
+  LK:LK, pyRound:pyRound, quantile:quantile, median:median, mann_whitney:mann_whitney,
+  hodges_lehmann:hodges_lehmann, bh_fdr:bh_fdr, erfc:erfc,
+  qps_weighted_agg:qps_weighted_agg, parse_run:parse_run,
+  crossing_sample:crossing_sample, _xy:_xy, _interp:_interp, resample:resample,
+  download_curve:download_curve, crossings_elapsed:crossings_elapsed, build_series:build_series,
+  build_cells:build_cells, compute_cell_stats:compute_cell_stats, qps_median:qps_median,
+  is_primary:is_primary, analyze:analyze, data_json:data_json, render_body:render_body,
+  bake_svg:bake_svg, op_table:op_table, op_time_table:op_time_table, time_rows:time_rows,
+  time_to_stall_table:time_to_stall_table, self_test:self_test,
+};
+if (typeof module !== "undefined" && module.exports) module.exports = CORE;
+if (typeof window !== "undefined") window.ORCORE = CORE;
+if (typeof require !== "undefined" && typeof module !== "undefined" && require.main === module){
+  process.exit(self_test());
+}
+})();
+/*__CORE_END__*/
+</script>
+
+<!-- ===================================================================== -->
+<!-- Chart renderer (ported from the Python CHART_JS, VERBATIM except the     -->
+<!-- elapsed-range zoom that replaces the old 0/30/60 clip, drag-to-zoom, and -->
+<!-- the copy-link button) + the client-side bootstrap (data-source resolve,  -->
+<!-- DOM render, file picker).                                                -->
+<!-- ===================================================================== -->
+<script>
+// Deferred so it runs AFTER the DOM shell is built and window.__CHART__ is set.
+function __runChart(){
+(function(){
+ var D=window.__CHART__;
+ var LAB=window.__LABELS__||{ctl:'A',exp:'B'};
+ var VAR={ctl_p50:'--ctl-p50',ctl_p95:'--ctl-p95',ctl_p99:'--ctl-p99',
+          exp_p50:'--lh-p50',exp_p95:'--lh-p95',exp_p99:'--lh-p99'};
+ var ARMS=['ctl','exp'];
+ var PMETS=['p50','p95','p99'];
+ var XMAX=window.__XMAXEL__||1;
+ // Fixed elapsed upper bound for both the latency and progress charts: the max sampled
+ // elapsed across all runs/arms (i.e. the last post-completion steady-state reading).
+ // It's global, so switching arms never rescales the axis — a faster arm's curve just
+ // ends earlier within the fixed width — and it includes the whole post-100% tail
+ // rather than clipping it at an estimated "completion + 1min".
+ var XFULL=XMAX;
+ var CTX=window.__CTX__||{};
+ // Mean download-completion elapsed for an arm: the mean of the runs' OWN 100% crossings
+ // (CTX.timing[arm][100].mean) — the typical completion. NOT where the averaged
+ // %-over-time curve reaches 100: that only happens once the slowest run finishes, so it
+ // reads as the max. Used for the elapsed-mode completion markers; %-downloaded mode
+ // already averages elapsed-at-100% (which equals this mean).
+ function meanComplete(a){ var t=CTX.timing&&CTX.timing[a];
+   return (t&&t[100]&&t[100].mean!=null)?t[100].mean:null; }
+ // Graduated "band" shells shared by every plot's band (latency σ-band, its download
+ // overlay, and the standalone download plot): [fraction, opacity] pairs. Each is a
+ // nested fill at that fraction of the spread (±σ for latency, of the min/max envelope
+ // for download); overlapping toward the mean makes the center densest and the edge
+ // fade out by the full spread. The innermost shell is a touch more opaque so the core
+ // (near the mean) reads a little stronger. Same set on every band so they look alike.
+ var SHELLS=[[1,0.05],[0.75,0.05],[0.5,0.05],[0.25,0.08]];
+ // range: elapsed-seconds window [start,end]; generalizes the old start-clip.
+ var state={p50:true,p95:false,p99:true,qps:true,scale:'linear',xmode:'elapsed',plot:'avg',
+            solo:null,   // null = summary/all runs (per the plot dropdown); a number = show only that run (latency + its download)
+            range:{start:0,end:XMAX},armMode:'both'};   // arms: 'both' | 'A' | 'B'
+ function armOn(a){return a==='ctl' ? state.armMode!=='B' : state.armMode!=='A';}
+ // Shared synced-cursor registry: op -> {x0,x1,xmin,xmax,yt,yb, gridX, head(cxv),
+ // series:[{at(cxv)->value, y(value)->px, color, fmt(value)->str}]}. Every chart
+ // (latency ops + the "__dl__" download chart) registers its geometry and the series
+ // to annotate; one drawCursor(xv) then draws the vertical + dots/labels on all of
+ // them. Rebuilt each redraw() (closures capture that render's scales + live state).
+ var CURSORS={};
+ function isFull(){return state.range.start<=0 && state.range.end>=XMAX;}
+ function fnum(v){
+   if(v>=1000)return Math.round(v).toLocaleString();
+   if(v>=100)return String(Math.round(v));
+   if(v>=10)return String(Math.round(v));
+   return String(Math.round(v*10)/10);
+ }
+ function rms(v){return Math.round(v).toLocaleString();}   // whole-ms cursor readout
+ function niceStep(x){
+   if(x<=0)return 1;
+   var e=Math.pow(10,Math.floor(Math.log10(x))),f=x/e;
+   var nf=f<1.5?1:f<3?2:f<7?5:10;return nf*e;
+ }
+ // Samples are taken every 30s, so the elapsed x-axis only has readings at multiples
+ // of 30. CAD is that cadence; time ticks and zoom bounds snap to it so labels land
+ // on real data points (never a 100s tick when the nearest readings are 90/120s).
+ var CAD=30;
+ function niceStep30(range){var target=range/5,mults=[1,2,3,4,5,6,8,10,15,20,30,40,60,120,240,480];
+   for(var i=0;i<mults.length;i++)if(CAD*mults[i]>=target)return CAD*mults[i];
+   return CAD*mults[mults.length-1];}
+ function interp(pts,xq){ // pts: [{x,m}]
+   if(!pts.length||xq<pts[0].x||xq>pts[pts.length-1].x)return null;
+   for(var i=1;i<pts.length;i++){if(pts[i].x>=xq){
+     var a=pts[i-1],b=pts[i];if(b.x===a.x)return b.m;
+     return a.m+(b.m-a.m)*(xq-a.x)/(b.x-a.x);}}
+   return pts[pts.length-1].m;
+ }
+ // Linearly interpolate every numeric field of two points at x (non-numeric fields
+ // taken from a); used to synthesize exact polyline endpoints at a zoom edge.
+ function lerpPt(a,b,x){var t=(b.x===a.x)?0:(x-a.x)/(b.x-a.x),o={x:x};
+   for(var k in a){if(k==='x')continue;
+     o[k]=(typeof a[k]==='number'&&typeof b[k]==='number')?a[k]+(b[k]-a[k])*t:a[k];}
+   return o;}
+ // Clip a sorted [{x,...}] polyline to [lo,hi] by clipping each segment, so a zoomed
+ // line meets the axis edges (interpolated endpoints) instead of stopping at the
+ // first/last in-window sample and leaving a gap.
+ function clipPts(pts,lo,hi){if(!pts||!pts.length)return [];
+   if(pts.length===1){var q=pts[0];return (q.x>=lo&&q.x<=hi)?[q]:[];}
+   var out=[],add=function(p){if(!out.length||out[out.length-1].x<p.x-1e-9)out.push(p);};
+   for(var i=0;i<pts.length-1;i++){var a=pts[i],b=pts[i+1];
+     if(b.x<lo||a.x>hi)continue;
+     var xa=Math.max(lo,a.x),xb=Math.min(hi,b.x);
+     add(xa===a.x?a:lerpPt(a,b,xa));
+     add(xb===b.x?b:lerpPt(a,b,xb));}
+   return out;}
+ function build(op){
+   var meta=D[op];
+   var elapsed=state.xmode==='elapsed';
+   var S=elapsed?meta.el:meta.pc;
+   // Elapsed-seconds window. In elapsed mode this is the x-domain; in % mode it
+   // is a time filter on the plotted points (x stays 0..100). y-scale is always
+   // computed from the in-window data so a zoomed view rescales.
+   var rstart=state.range.start||0;
+   var rend=(state.range.end!=null?state.range.end:XMAX);
+   var full=(rstart<=0 && rend>=XMAX);
+   if(elapsed) rend=Math.min(rend, XFULL);   // fixed max(a+1min,b+1min); no arm-switch rescale
+   // elapsed: clip each series to the range window, interpolating exact endpoints so
+   // lines reach the zoom edges. % mode: filter by each point's elapsed (.e) instead.
+   var FS={};
+   if(elapsed){ for(var fk in S) FS[fk]=clipPts(S[fk]||[], rstart, rend); }
+   else { for(var fk2 in S) FS[fk2]=(S[fk2]||[]).filter(function(p){return p.e==null?full:(p.e>=rstart&&p.e<=rend);}); }
+   var W=760,H=320;                          // all charts share one size
+   var x0=52,x1=690,yt=22,yb=284,lx=9;
+   // With both arms shown, the download overlay (right axis + curve + milestones)
+   // is ambiguous per-arm and lives instead in the dedicated A/B download chart in
+   // the Duration section — so drop it from the latency plots and reclaim the width.
+   var multiArm = window.__DUAL__ && armOn('ctl') && armOn('exp');
+   // Reserve the right axis for: the download context (single-arm), or the qps overlay
+   // in A/B (where there's no download axis and qps gets a labeled scale). Single-arm
+   // qps rides the same reserved gutter with no ticks, so no extra width is needed.
+   if(!multiArm || state.qps) x1-=40;
+   var log=state.scale==='log';
+   var keys=[];PMETS.forEach(function(m){if(state[m]){ARMS.forEach(function(a){
+     if(armOn(a)&&FS[a+'_'+m]&&FS[a+'_'+m].length)keys.push(a+'_'+m);});}});
+   var hi=[],lo=[];
+   keys.forEach(function(k){(FS[k]||[]).forEach(function(p){hi.push(p.m+p.s);lo.push(p.m-p.s);});});
+   var ymax=hi.length?Math.max.apply(null,hi):1,ymin,step;
+   if(log){var pos=lo.filter(function(v){return v>0;});
+     ymin=Math.max(1,(pos.length?Math.min.apply(null,pos):1)*0.85);ymax=ymax*1.15;}
+   else{ymin=0;step=niceStep((ymax*1.02)/5);ymax=Math.ceil((ymax*1.02)/step)*step;if(!(ymax>0))ymax=1;}
+   // x domain: elapsed shares a GLOBAL max so all charts align (synced cursor),
+   // clipped to the range window; % is always 0..100.
+   var xmin=elapsed?rstart:0;
+   var xmax=elapsed?rend:100;
+   if(!(xmax>xmin))xmax=xmin+1;
+   function X(v){return x0+((v-xmin)/(xmax-xmin))*(x1-x0);}
+   function Y(v){
+     if(log){v=Math.max(v,ymin);
+       return yb-((Math.log10(v)-Math.log10(ymin))/(Math.log10(ymax)-Math.log10(ymin)))*(yb-yt);}
+     return yb-((v-ymin)/(ymax-ymin))*(yb-yt);
+   }
+   function Y2(pct){return yb-(pct/100)*(yb-yt);}  // right axis, 0..100%
+   var s=[];
+   s.push('<svg viewBox="0 0 '+W+' '+H+'" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-label="latency for '+op+'">');
+   var ticks=[];
+   if(log){var pp=Math.floor(Math.log10(ymin));while(true){var b=Math.pow(10,pp);
+     [1,2,5].forEach(function(mn){var v=mn*b;if(v>=ymin*0.999&&v<=ymax*1.001)ticks.push(v);});
+     if(b>ymax)break;pp++;}}
+   else{for(var v=0;v<=ymax+1e-9;v+=step)ticks.push(v);}
+   ticks.forEach(function(tv){var y=Y(tv);
+     s.push('<line class="grid" x1="'+x0+'" y1="'+y.toFixed(1)+'" x2="'+x1+'" y2="'+y.toFixed(1)+'"/>');
+     s.push('<text class="ytick" x="'+(x0-5)+'" y="'+(y+2).toFixed(1)+'" text-anchor="end">'+fnum(tv)+'ms</text>');});
+   s.push('<line class="axis" x1="'+x0+'" y1="'+yt+'" x2="'+x0+'" y2="'+yb+'"/>');
+   s.push('<line class="axis" x1="'+x0+'" y1="'+yb+'" x2="'+x1+'" y2="'+yb+'"/>');
+   // x ticks. When zoomed, label the exact window edges (xmin/xmax) too, dropping
+   // nice-step ticks that would crowd them — the first/last tick should be the edge.
+   if(elapsed){var es=niceStep30(xmax-xmin);
+     var xtick=function(v){var x=X(v);
+       s.push('<line class="grid" x1="'+x.toFixed(1)+'" y1="'+yt+'" x2="'+x.toFixed(1)+'" y2="'+yb+'" opacity="0.5"/>');
+       s.push('<text class="xtick" x="'+x.toFixed(1)+'" y="'+(yb+9)+'" text-anchor="middle">'+Math.round(v)+'s</text>');};
+     for(var ev=Math.ceil(xmin/es)*es;ev<=xmax+1e-9;ev+=es){
+       if(!full&&(Math.abs(ev-xmin)<es*0.5||Math.abs(ev-xmax)<es*0.5))continue;
+       xtick(ev);}
+     if(!full){xtick(xmin);xtick(xmax);}}
+   else{[0,20,40,60,80,100].forEach(function(pc){var x=X(pc);
+     s.push('<line class="grid" x1="'+x.toFixed(1)+'" y1="'+yt+'" x2="'+x.toFixed(1)+'" y2="'+yb+'" opacity="0.5"/>');
+     s.push('<text class="xtick" x="'+x.toFixed(1)+'" y="'+(yb+9)+'" text-anchor="middle">'+pc+'%</text>');});}
+   s.push('<text class="axtitle" x="'+((x0+x1)/2)+'" y="'+(H-4)+'" text-anchor="middle">'+(elapsed?'elapsed (s)':'% downloaded')+'</text>');
+   s.push('<text class="axtitle" transform="rotate(-90 '+lx+' '+((yt+yb)/2)+')" x="'+lx+'" y="'+((yt+yb)/2)+'" text-anchor="middle">latency'+(log?' (log)':'')+'</text>');
+   // Second (right) y-axis + download milestones — the download context overlaid on
+   // the latency plot. Only shown when a single arm is in view; in A/B-both mode
+   // the (per-arm-ambiguous) download context lives in the dedicated chart instead.
+   if(!multiArm){
+   // elapsed mode -> % undownloaded (download progress), Y2 in [0,100];
+   // % mode       -> elapsed at each % (rises from 0 as runs progress), Y2s in [0,XMAX].
+   var t2x=x1+32;
+   var curve=function(c,yfn,cls,color){var d=c.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+yfn(p).toFixed(1);}).join(' ');s.push('<path class="'+(cls||'dlcurve')+'"'+(color?' style="stroke:'+color+'"':'')+' d="'+d+'"/>');};
+   var runCurves=function(arr,yfn,color){(arr||[]).forEach(function(pl){var c2=clipPts(pl,xmin,xmax);if(c2.length>=2)curve(c2,yfn,'dlcurve dlrun',color);});};
+   var soloCurve=function(arr,yfn,color){var pl=(arr||[])[state.solo];if(!pl)return;var c1=clipPts(pl,xmin,xmax);if(c1.length>=2)curve(c1,yfn,null,color);};
+   // Graduated shells (SHELLS) toward the mean, matching the latency and standalone
+   // download bands. Y is linear so we interpolate each shell edge in y-space between
+   // the mean (yfn) and the min/max edges (loFn/hiFn).
+   var band=function(c,yfn,loFn,hiFn,color){SHELLS.forEach(function(sh){var f=sh[0],op=sh[1];
+     var top=c.map(function(p){var m=yfn(p);return [X(p.x),m+f*(hiFn(p)-m)];});
+     var bot=c.map(function(p){var m=yfn(p);return [X(p.x),m+f*(loFn(p)-m)];});
+     var poly=top.concat(bot.reverse()).map(function(q){return q[0].toFixed(1)+','+q[1].toFixed(1);}).join(' ');
+     s.push('<polygon points="'+poly+'" class="dlband" style="'+(color?'fill:'+color+';':'')+'opacity:'+op+'"/>');});};
+   function y2axis(ticks,fmt,title){ticks.forEach(function(tv){var y=tv[1];
+       s.push('<text class="y2tick" x="'+(x1+4)+'" y="'+(y+2).toFixed(1)+'" text-anchor="start">'+fmt(tv[0])+'</text>');});
+     s.push('<text class="axtitle" transform="rotate(-90 '+t2x+' '+((yt+yb)/2)+')" x="'+t2x+'" y="'+((yt+yb)/2)+'" text-anchor="middle">'+title+'</text>');}
+   function drawSecond(arms2, mean, runsArr, yfn, loFn, hiFn){
+     arms2.forEach(function(a){if(!armOn(a))return;var c=clipPts(mean[a]||[],xmin,xmax);if(c.length<2)return;
+       if(state.solo!=null){ soloCurve(runsArr[a], yfn); return; }
+       if(state.plot==='avg'){ band(c, yfn, loFn, hiFn); }
+       else if(state.plot==='all'){ runCurves(runsArr[a], yfn); }
+       curve(c, yfn);
+     });
+   }
+   if(elapsed){
+     var cl=function(u){return u<0?0:u>100?100:u;};
+     y2axis([[0,Y2(0)],[25,Y2(25)],[50,Y2(50)],[75,Y2(75)],[100,Y2(100)]],function(v){return v+'%';},'% undownloaded');
+     drawSecond(ARMS, meta.dl, meta.dlRuns,
+       function(p){return Y2(cl(100-p.y));}, function(p){return Y2(cl(100-p.lo));}, function(p){return Y2(cl(100-p.hi));});
+   } else {
+     var smax=XMAX>0?XMAX:1; var Y2s=function(sec){return yb-(sec/smax)*(yb-yt);};
+     var st2=niceStep(smax/4),tk=[]; for(var sv=0;sv<=smax+1e-9;sv+=st2)tk.push([sv,Y2s(sv)]);
+     y2axis(tk,function(v){return Math.round(v)+'s';},'elapsed (s)');
+     drawSecond(ARMS, meta.ep, meta.epRuns,
+       function(p){return Y2s(p.y);}, function(p){return Y2s(p.lo);}, function(p){return Y2s(p.hi);});
+   }
+   // Vertical download-complete (100%) marker. In solo view it's the selected run's own
+   // 100% crossing; in avg/all it's the mean of the runs' completions (meanComplete) —
+   // NOT where the averaged download curve reaches 100%, which lags to the slowest run.
+   // Grey = the download dimension (not a latency arm).
+   var MS=[100];
+   var dlOf=function(a){ return state.solo!=null ? (meta.dlRuns[a]||[])[state.solo] : meta.dl[a]; };
+   var dlCrossEl=function(c,pc){ if(!c||!c.length)return null;
+     for(var i=0;i<c.length;i++){ if(c[i].y>=pc){ if(i===0)return c[0].x; var a=c[i-1],b=c[i];
+       return b.y===a.y?b.x:a.x+(b.x-a.x)*(pc-a.y)/(b.y-a.y); } } return null; };
+   var completeEl=function(a){ return state.solo!=null ? dlCrossEl(dlOf(a),100) : meanComplete(a); };
+   if(elapsed){
+     ARMS.forEach(function(a){if(!armOn(a))return;var dc=dlOf(a);if(!dc||!dc.length)return;
+       var el=completeEl(a);if(el==null||el<xmin||el>xmax)return;var x=X(el);
+       s.push('<line class="msline" x1="'+x.toFixed(1)+'" y1="'+yt+'" x2="'+x.toFixed(1)+'" y2="'+yb+'"/>');
+       s.push('<text class="pctlab" x="'+x.toFixed(1)+'" y="'+(yt+7)+'" text-anchor="middle">100%</text>');
+       s.push('<text class="mslab" x="'+x.toFixed(1)+'" y="'+(yb+16)+'" text-anchor="middle">'+Math.round(el)+'s</text>');});
+   }else{
+     var x=X(100),i=0;
+     s.push('<line class="msline" x1="'+x.toFixed(1)+'" y1="'+yt+'" x2="'+x.toFixed(1)+'" y2="'+yb+'"/>');
+     s.push('<text class="pctlab" x="'+x.toFixed(1)+'" y="'+(yt+7)+'" text-anchor="middle">100%</text>');
+     ARMS.forEach(function(a){if(!armOn(a))return;var el=completeEl(a);if(el==null)return;
+       s.push('<text class="mslab" x="'+x.toFixed(1)+'" y="'+(yb+16+i*7)+'" text-anchor="middle">'+Math.round(el)+'s</text>');i++;});
+   }
+   } else if(elapsed && state.plot==='avg' && state.solo==null){
+     // A vs B, avg view: no per-arm download overlay (ambiguous), but mark each arm's
+     // mean completion (mean of its runs' 100% crossings) with a dimmed dashed vertical
+     // in its color, with the elapsed-to-complete below the x-axis (the second arm's
+     // seconds staggers down so the two don't collide). No "100%" label — the right axis
+     // here is % *un*downloaded, so the line is at 0% there; the seconds carry the meaning.
+     var mi=0;
+     ARMS.forEach(function(a){ if(!armOn(a))return; var ce=meanComplete(a); if(ce==null||ce<xmin||ce>xmax)return;
+       var x=X(ce), col=a==='ctl'?'var(--ctl-p95)':'var(--lh-p95)';
+       s.push('<line x1="'+x.toFixed(1)+'" y1="'+yt+'" x2="'+x.toFixed(1)+'" y2="'+yb+'" style="stroke:'+col+';opacity:0.4;stroke-dasharray:4 3"/>');
+       s.push('<text class="mslab" x="'+x.toFixed(1)+'" y="'+(yb+16+mi*7)+'" text-anchor="middle" style="fill:'+col+'">'+Math.round(ce)+'s</text>');
+       mi++;});
+   }
+   // Spread layer behind the mean lines, per the plot dropdown:
+   //  summary (avg) -> graduated ±σ band (nested 1σ/0.66σ/0.33σ shells, fading out);
+   //  all           -> faint per-run polylines (ensemble; most honest, shows outliers).
+   var runsMap = elapsed ? meta.elRuns : meta.pcRuns;
+   if(state.solo!=null){
+     // Solo: only the selected run's line per active key (no band, no mean) — pairs
+     // with that run's download curve below so you can correlate one run's latency
+     // with its own download progress.
+     keys.forEach(function(k){var arr=runsMap&&runsMap[k];var pl=arr&&arr[state.solo];if(!pl)return;
+       var c=clipPts(pl, xmin, xmax);if(c.length<2)return;
+       var d=c.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Y(p.y).toFixed(1);}).join(' ');
+       s.push('<path class="ln" style="stroke:var('+VAR[k]+')" d="'+d+'"/>');});
+   } else {
+     if(state.plot==='avg'){
+       // Graduated ±σ band (SHELLS): nested translucent fills overlapping toward the
+       // mean so the center reads densest and the edge fades out by ~1σ — a spread cue
+       // that (unlike a min/max envelope) can't imply latency reached 0. The y-scale
+       // is already sized to mean±1σ, so 1σ fits.
+       keys.forEach(function(k){var pts=FS[k]||[];if(pts.length<2)return;
+         SHELLS.forEach(function(sh){var kk=sh[0],op=sh[1];
+           var top=[],bot=[];
+           pts.forEach(function(p){top.push([X(p.x),Y(p.m+kk*p.s)]);bot.push([X(p.x),Y(Math.max(p.m-kk*p.s,ymin))]);});
+           var poly=top.concat(bot.reverse()).map(function(a){return a[0].toFixed(1)+','+a[1].toFixed(1);}).join(' ');
+           s.push('<polygon points="'+poly+'" style="fill:var('+VAR[k]+');opacity:'+op+'"/>');});});
+     } else if(state.plot==='all'){
+       keys.forEach(function(k){var rs=(runsMap&&runsMap[k])||[];
+         rs.forEach(function(pl){var c=clipPts(pl, xmin, xmax);if(c.length<2)return;
+           var d=c.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Y(p.y).toFixed(1);}).join(' ');
+           s.push('<path class="rln" style="stroke:var('+VAR[k]+')" d="'+d+'"/>');});});
+     }
+     keys.forEach(function(k){var pts=FS[k]||[];if(pts.length<2)return;
+       var d=pts.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Y(p.m).toFixed(1);}).join(' ');
+       s.push('<path class="ln" style="stroke:var('+VAR[k]+')" d="'+d+'"/>');});
+   }
+   // QPS overlay (toggle): a dashed line per arm in its color, on its own scale (not
+   // ms). In A/B the right axis is free, so qps gets labeled ticks there; single-arm's
+   // right axis is the download context, so qps rides an unlabeled scale — just the
+   // dashed line, tagged with a "qps" end-label so it's identifiable.
+   if(state.qps){
+     var qMean=function(a){ return elapsed ? meta.qpEl[a] : meta.qpPc[a]; };
+     var qRuns=function(a){ return elapsed ? meta.qpElRuns[a] : meta.qpPcRuns[a]; };
+     var qPick=function(a){ return state.solo!=null ? (qRuns(a)||[])[state.solo] : qMean(a); };
+     var qval=function(p){ return p.m!=null?p.m:p.y; };   // mean series has .m, per-run has .y
+     var qmax=0;
+     ARMS.forEach(function(a){ if(!armOn(a))return; (qPick(a)||[]).forEach(function(p){var v=qval(p); if(v>qmax)qmax=v;}); });
+     if(qmax>0){
+       var qstep=niceStep(qmax/4), qtop=Math.ceil(qmax/qstep)*qstep||1;
+       var Yq=function(v){ return yb-(v/qtop)*(yb-yt); };
+       if(multiArm){   // labeled right axis (no download axis in A/B)
+         for(var qv=0;qv<=qtop+1e-9;qv+=qstep)
+           s.push('<text class="y2tick" x="'+(x1+4)+'" y="'+(Yq(qv)+2).toFixed(1)+'" text-anchor="start">'+Math.round(qv)+'</text>');
+         var qtx=x1+32;
+         s.push('<text class="axtitle" transform="rotate(-90 '+qtx+' '+((yt+yb)/2)+')" x="'+qtx+'" y="'+((yt+yb)/2)+'" text-anchor="middle">qps</text>');
+       }
+       ARMS.forEach(function(a){ if(!armOn(a))return; var arr=qPick(a); if(!arr||!arr.length)return;
+         var c=clipPts(arr.map(function(p){return {x:p.x,y:qval(p)};}), xmin, xmax); if(c.length<2)return;
+         var col=a==='ctl'?'var(--ctl-p95)':'var(--lh-p95)';
+         s.push('<path class="qpsln" style="stroke:'+col+'" d="'+c.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Yq(p.y).toFixed(1);}).join(' ')+'"/>');
+         var lp=c[c.length-1], ly=Math.min(Math.max(Yq(lp.y),yt+6),yb-4);
+         s.push('<text class="endlab" x="'+(X(lp.x)-2).toFixed(1)+'" y="'+(ly-2).toFixed(1)+'" text-anchor="end" style="fill:'+col+'">qps</text>');
+       });
+     }
+   }
+   // Register this chart with the shared cursor: latency metrics on the ms scale (+ qps
+   // on its own scale when on). The download context stays in the head text.
+   (function(){
+     var cser=[];
+     PMETS.forEach(function(m){ if(!state[m])return; ARMS.forEach(function(a){ if(!armOn(a))return;
+       var key=a+'_'+m;
+       cser.push({color:'var('+VAR[key]+')', y:Y, fmt:rms, at:function(cxv){
+         if(state.solo!=null){var arr=runsMap&&runsMap[key];var pl=arr&&arr[state.solo];return pl?interp2(pl,cxv):null;}
+         var pts=S[key];return (pts&&pts.length)?interp(pts,cxv):null;}});
+     });});
+     if(state.qps && qtop>0 && typeof Yq==='function'){
+       ARMS.forEach(function(a){ if(!armOn(a))return;
+         var qm=elapsed?meta.qpEl:meta.qpPc, qr=elapsed?meta.qpElRuns:meta.qpPcRuns;
+         cser.push({color:'var('+(a==='ctl'?'--ctl-p95':'--lh-p95')+')', y:Yq, fmt:rms, at:function(cxv){
+           if(state.solo!=null){var arr=qr[a]&&qr[a][state.solo];return arr?interp2(arr,cxv):null;}
+           var pts=qm[a];return (pts&&pts.length)?interp(pts,cxv):null;}});
+       });
+     }
+     var g0=null; for(var gk in S){ if(S[gk]&&S[gk].length){ g0=S[gk].map(function(p){return p.x;}); break; } }
+     CURSORS[op]={x0:x0,x1:x1,xmin:xmin,xmax:xmax,yt:yt,yb:yb,W:W,gridX:g0,series:cser,
+       head:function(cxv){ var h=elapsed?(Math.round(cxv)+'s'):(Math.round(cxv)+'%');
+         if(state.solo!=null)h+=' · run '+(state.solo+1);
+         if(elapsed&&!multiArm){var pc=null;ARMS.forEach(function(a){if(!armOn(a))return;
+           var cc=state.solo!=null?(meta.dlRuns[a]||[])[state.solo]:meta.dl[a];
+           if(cc&&pc==null){var p=interp2(cc,cxv);if(p!=null)pc=p;}}); if(pc!=null)h+=' · '+Math.round(pc)+'% dl';}
+         return h; }};
+   })();
+   // p99 end-labels (arm names).
+   if(state.p99){var ep={};ARMS.forEach(function(a){if(!armOn(a))return;var pts=FS[a+'_p99'];if(!pts||!pts.length)return;
+     var p=pts[pts.length-1];ep[a]=[X(p.x),Math.min(Math.max(Y(p.m),yt+6),yb-4)];});
+     if(ep.ctl&&ep.exp&&Math.abs(ep.ctl[1]-ep.exp[1])<10){
+       var h=ep.ctl[1]<=ep.exp[1]?'ctl':'exp',l=h==='ctl'?'exp':'ctl';
+       ep[l][1]=ep[h][1]+10;var ov=ep[l][1]-(yb-4);if(ov>0){ep[h][1]-=ov;ep[l][1]-=ov;}}
+     ARMS.forEach(function(a){if(!ep[a])return;
+       s.push('<text class="endlab" x="'+(ep[a][0]+4).toFixed(1)+'" y="'+(ep[a][1]+2).toFixed(1)+'" style="fill:var('+VAR[a+'_p99']+')">'+(LAB[a]||a)+' p99</text>');});}
+   // Synced-cursor hit area + empty layer the mousemove handler fills (no rebuild).
+   s.push('<rect class="scrubhit" x="'+x0+'" y="'+yt+'" width="'+(x1-x0)+'" height="'+(yb-yt)+'" fill="transparent" pointer-events="all" '+
+     'data-op="'+op+'" data-x0="'+x0+'" data-x1="'+x1+'" data-xmin="'+xmin+'" data-xmax="'+xmax+'" data-yt="'+yt+'" data-yb="'+yb+'" '+
+     'data-ymin="'+ymin+'" data-ymax="'+ymax+'" data-log="'+(log?1:0)+'" data-qtop="'+(qtop||0)+'"/>');
+   s.push('<g class="cursorlayer" data-op="'+op+'"></g>');
+   s.push('</svg>');
+   return s.join('');
+ }
+ // Standalone A/B download-progress plot for the "restore" section: % undownloaded
+ // Download progress is cluster-wide, so any op's curves serve — read off the
+ // aggregate. Obeys the same plot controls (summary/all/run) and arm cycle. Both
+ // x-modes are oriented so runs START TOGETHER and END APART (they began at the same
+ // instant and diverged as they ran), just transposed:
+ //  elapsed -> y = % downloaded (0 -> 100, up-and-right), x = elapsed. All start at
+ //             (0s, 0%), each reaches 100% at its own finish time (end apart on x).
+ //  %-downloaded -> y = elapsed, x = % downloaded (0 -> 100). All start at (0%, 0s),
+ //             each reaches 100% at its own finish time (end apart on y). Same data
+ //             as the latency plots' second axis (ep). (Undownloaded-vs-%downloaded
+ //             would just be a straight line, so %-mode plots elapsed-to-reach-%.)
+ // In elapsed mode a drag zooms the shared range (like the latency plots); a plain
+ // click cycles arms. 100%-completion diamonds mark finish times: per-run in "all"
+ // mode (>1 run, showing the spread), and on each mean in avg mode when arms are being
+ // compared (so you can see which arm finished first).
+ function buildDownload(){
+   var host=document.querySelector('.dlchart[data-dl]'); if(!host) return;
+   var op=D.agg?'agg':Object.keys(D)[0]; var meta=op&&D[op];
+   if(!meta||!meta.dl){ host.innerHTML=''; return; }
+   var elapsed=state.xmode==='elapsed';
+   var W=760,H=320,x0=52,x1=650,yt=22,yb=284,lx=9;   // same size as the other charts; x1 leaves the MB/s gutter
+   var cl=function(u){return u<0?0:u>100?100:u;};
+   var colOf={ctl:'var(--ctl-p95)',exp:'var(--lh-p95)'};
+   // Comparing arms (more than one arm actually shown with data): keep a 100%-
+   // completion diamond on each mean even in avg mode, so you can see which finished
+   // first. Gated on data presence so a single-arm report doesn't count "exp" as on.
+   var multi=ARMS.filter(function(a){return armOn(a) && meta.dl[a] && meta.dl[a].length;}).length>1;
+   var crossEl=function(c,pc){ if(!c||!c.length)return null;
+     for(var i=0;i<c.length;i++){ if(c[i].y>=pc){ if(i===0)return c[0].x; var a=c[i-1],b=c[i];
+       return b.y===a.y?b.x:a.x+(b.x-a.x)*(pc-a.y)/(b.y-a.y); } } return null; };
+   var diamond=function(cx,cy,color){var r=3.4;
+     s.push('<polygon class="dldiam" points="'+cx.toFixed(1)+','+(cy-r).toFixed(1)+' '+(cx+r).toFixed(1)+','+cy.toFixed(1)
+       +' '+cx.toFixed(1)+','+(cy+r).toFixed(1)+' '+(cx-r).toFixed(1)+','+cy.toFixed(1)+'" style="fill:'+color+'"/>');};
+   var s=[];
+   s.push('<svg viewBox="0 0 '+W+' '+H+'" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-label="download progress">');
+   var xmin,xmax,X,Y,curve,band,drawArm,xTitle,yTitle,xticks;
+   if(elapsed){
+     var rstart=state.range.start||0, rend=(state.range.end!=null?state.range.end:XMAX);
+     var full=(rstart<=0 && rend>=XMAX);
+     // Fixed domain [0, max(a+1min,b+1min)] shared with the latency chart, so switching
+     // arms doesn't rescale the axis. Curves still truncate at their own 100% (cut100
+     // below), so a faster arm ends earlier within this fixed width.
+     xmin=rstart; xmax=Math.min(rend, XFULL); if(!(xmax>xmin))xmax=xmin+1;
+     // Truncate a download polyline at its first 100% (interpolated), dropping the flat
+     // post-completion tail.
+     var cut100=function(pl){ if(!pl||!pl.length)return pl;
+       for(var i=0;i<pl.length;i++){ if(pl[i].y>=100){ if(i===0)return [pl[0]];
+         var a=pl[i-1],b=pl[i],t=(b.y===a.y)?0:(100-a.y)/(b.y-a.y),e={};
+         for(var k in a)e[k]=(typeof a[k]==='number'&&typeof b[k]==='number')?a[k]+(b[k]-a[k])*t:a[k];
+         e.y=100; return pl.slice(0,i).concat([e]); } }
+       return pl; };
+     X=function(v){return x0+((v-xmin)/(xmax-xmin))*(x1-x0);};
+     Y=function(v){return yb-(v/100)*(yb-yt);};          // 0..100, 0 at bottom
+     var dY=function(p){return Y(cl(p.y));};             // % downloaded (rises up-and-right)
+     yTitle='% downloaded'; xTitle='elapsed (s)';
+     [0,25,50,75,100].forEach(function(u){var y=Y(u);
+       s.push('<line class="grid" x1="'+x0+'" y1="'+y.toFixed(1)+'" x2="'+x1+'" y2="'+y.toFixed(1)+'"/>');
+       s.push('<text class="ytick" x="'+(x0-5)+'" y="'+(y+2).toFixed(1)+'" text-anchor="end">'+u+'%</text>');});
+     xticks=function(){var es=niceStep30(xmax-xmin);
+       var xt=function(v){var x=X(v);
+         s.push('<line class="grid" x1="'+x.toFixed(1)+'" y1="'+yt+'" x2="'+x.toFixed(1)+'" y2="'+yb+'" opacity="0.5"/>');
+         s.push('<text class="xtick" x="'+x.toFixed(1)+'" y="'+(yb+9)+'" text-anchor="middle">'+Math.round(v)+'s</text>');};
+       for(var ev=Math.ceil(xmin/es)*es;ev<=xmax+1e-9;ev+=es){
+         if(!full&&(Math.abs(ev-xmin)<es*0.5||Math.abs(ev-xmax)<es*0.5))continue; xt(ev);}
+       if(!full){xt(xmin);xt(xmax);}};
+     curve=function(c,color,cls){var cc=clipPts(cut100(c),xmin,xmax);
+       var d=cc.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+dY(p).toFixed(1);}).join(' ');
+       if(cc.length>=2) s.push('<path class="'+(cls||'ln')+'" style="stroke:'+color+'" d="'+d+'"/>');};
+     band=function(c,color){var cc=clipPts(cut100(c),xmin,xmax); if(cc.length<2)return;
+       SHELLS.forEach(function(sh){var f=sh[0],op=sh[1];
+         var top=cc.map(function(p){return [X(p.x),Y(cl(p.y+f*(p.hi-p.y)))];});
+         var bot=cc.map(function(p){return [X(p.x),Y(cl(p.y-f*(p.y-p.lo)))];});
+         s.push('<polygon class="dlband" points="'+top.concat(bot.reverse()).map(function(q){return q[0].toFixed(1)+','+q[1].toFixed(1);}).join(' ')+'" style="fill:'+color+';opacity:'+op+'"/>');});};
+     // 100% completion is at downloaded 100 (top axis), x = each run's finish time.
+     var inWin=function(v){return v>=xmin-1e-9 && v<=xmax+1e-9;};
+     drawArm=function(a){var runs=meta.dlRuns[a]||[], nr=runs.length, mean=meta.dl[a]||[];
+       if(state.solo!=null){ if(runs[state.solo]) curve(runs[state.solo],colOf[a]); }
+       else if(state.plot==='all'){ runs.forEach(function(pl){curve(pl,colOf[a],'rln');
+         if(nr>1){var rc=crossEl(pl,100); if(rc!=null&&inWin(rc)) diamond(X(rc),Y(100),colOf[a]);}}); if(mean.length>=2)curve(mean,colOf[a]); }
+       else { if(mean.length>=2){band(mean,colOf[a]);curve(mean,colOf[a]);
+         var ce=meanComplete(a); if(ce!=null&&inWin(ce)){var xc=X(ce);
+           // Mean completion (mean of the runs' 100% crossings): dimmed dashed vertical +
+           // diamond at the 100% line + elapsed label. This sits left of where the
+           // averaged curve visually reaches 100% (which lags to the slowest run); the
+           // mean is the typical finish. Label staggers down for the 2nd arm (A vs B).
+           s.push('<line x1="'+xc.toFixed(1)+'" y1="'+yt+'" x2="'+xc.toFixed(1)+'" y2="'+yb+'" style="stroke:'+colOf[a]+';opacity:0.4;stroke-dasharray:4 3"/>');
+           diamond(xc,Y(100),colOf[a]);
+           var yoff=(multi&&a==='exp')?23:16;
+           s.push('<text class="mslab" x="'+xc.toFixed(1)+'" y="'+(yb+yoff)+'" text-anchor="middle" style="fill:'+colOf[a]+'">'+Math.round(ce)+'s</text>');
+         }} }
+       if(mean.length){var mc=crossEl(mean,100), lxp=(mc!=null?Math.min(mc,xmax):null);
+         if(lxp!=null&&inWin(lxp)) s.push('<text class="endlab" x="'+(X(lxp)+4).toFixed(1)+'" y="'+(yt+8).toFixed(1)+'" style="fill:'+colOf[a]+'">'+(LAB[a]||a)+'</text>');}};
+   } else {
+     // %-mode: elapsed (y) vs % downloaded (x). y-scale from the shown runs' finishes.
+     xmin=0; xmax=100;
+     // y-scale fixed over BOTH arms (and >= XFULL) so switching arms doesn't rescale it.
+     var ymax=XFULL; ARMS.forEach(function(a){(meta.ep[a]||[]).forEach(function(p){if(p.hi>ymax)ymax=p.hi;});});
+     var yst=niceStep((ymax*1.02)/5); ymax=Math.ceil((ymax*1.02)/yst)*yst; if(!(ymax>0))ymax=1;
+     X=function(v){return x0+(v/100)*(x1-x0);};
+     Y=function(sec){return yb-(sec/ymax)*(yb-yt);};
+     yTitle='elapsed (s)'; xTitle='% downloaded';
+     for(var yv=0;yv<=ymax+1e-9;yv+=yst){var y=Y(yv);
+       s.push('<line class="grid" x1="'+x0+'" y1="'+y.toFixed(1)+'" x2="'+x1+'" y2="'+y.toFixed(1)+'"/>');
+       s.push('<text class="ytick" x="'+(x0-5)+'" y="'+(y+2).toFixed(1)+'" text-anchor="end">'+Math.round(yv)+'s</text>');}
+     xticks=function(){[0,20,40,60,80,100].forEach(function(pc){var x=X(pc);
+       s.push('<line class="grid" x1="'+x.toFixed(1)+'" y1="'+yt+'" x2="'+x.toFixed(1)+'" y2="'+yb+'" opacity="0.5"/>');
+       s.push('<text class="xtick" x="'+x.toFixed(1)+'" y="'+(yb+9)+'" text-anchor="middle">'+pc+'%</text>');});};
+     curve=function(c,color,cls){var d=c.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Y(p.y).toFixed(1);}).join(' ');
+       if(c.length>=2) s.push('<path class="'+(cls||'ln')+'" style="stroke:'+color+'" d="'+d+'"/>');};
+     band=function(c,color){SHELLS.forEach(function(sh){var f=sh[0],op=sh[1];
+       var top=c.map(function(p){return [X(p.x),Y(p.y+f*(p.hi-p.y))];});
+       var bot=c.map(function(p){return [X(p.x),Y(p.y-f*(p.y-p.lo))];});
+       if(top.length<2)return;
+       s.push('<polygon class="dlband" points="'+top.concat(bot.reverse()).map(function(q){return q[0].toFixed(1)+','+q[1].toFixed(1);}).join(' ')+'" style="fill:'+color+';opacity:'+op+'"/>');});};
+     // 100% completion is at x=100 (right edge), y = each run's finish time.
+     drawArm=function(a){var runs=meta.epRuns[a]||[], nr=runs.length, mean=meta.ep[a]||[];
+       if(state.solo!=null){ if(runs[state.solo]) curve(runs[state.solo],colOf[a]); }
+       else if(state.plot==='all'){ runs.forEach(function(pl){curve(pl,colOf[a],'rln');
+         if(nr>1){var lp=pl[pl.length-1]; if(lp) diamond(X(lp.x),Y(lp.y),colOf[a]);}}); if(mean.length>=2)curve(mean,colOf[a]); }
+       else { if(mean.length>=2){band(mean,colOf[a]);curve(mean,colOf[a]);
+         if(multi){var mlp=mean[mean.length-1]; if(mlp) diamond(X(mlp.x),Y(mlp.y),colOf[a]);}} }
+       if(mean.length){var lp=mean[mean.length-1]; var ly=Math.min(Math.max(Y(lp.y),yt+6),yb-4);
+         s.push('<text class="endlab" x="'+(X(lp.x)-2).toFixed(1)+'" y="'+(ly-3).toFixed(1)+'" text-anchor="end" style="fill:'+colOf[a]+'">'+(LAB[a]||a)+'</text>');}};
+   }
+   s.push('<line class="axis" x1="'+x0+'" y1="'+yt+'" x2="'+x0+'" y2="'+yb+'"/>');
+   s.push('<line class="axis" x1="'+x0+'" y1="'+yb+'" x2="'+x1+'" y2="'+yb+'"/>');
+   xticks();
+   s.push('<text class="axtitle" x="'+((x0+x1)/2)+'" y="'+(H-4)+'" text-anchor="middle">'+xTitle+'</text>');
+   s.push('<text class="axtitle" transform="rotate(-90 '+lx+' '+((yt+yb)/2)+')" x="'+lx+'" y="'+((yt+yb)/2)+'" text-anchor="middle">'+yTitle+'</text>');
+   ARMS.forEach(function(a){ if(armOn(a)) drawArm(a); });
+   // MB/s overlay on the reserved right axis: dashed mean + σ-shell band per arm (same
+   // shell treatment as the latency plots). The source series is already per-node (the
+   // test divides the cluster-wide free-space delta by #nodes), so pn is the identity —
+   // present only so the per-value math below reads uniformly. NODES is used solely to
+   // decide axis-label wording.
+   var NODES=window.__NODES__||1, pn=function(v){return v;};
+   var mbTitle=NODES>1?'MB/s/node':'MB/s';
+   var mMean=function(a){return elapsed?meta.mb[a]:meta.mbPc[a];};
+   var mRuns=function(a){return elapsed?meta.mbRuns[a]:meta.mbPcRuns[a];};
+   var mPick=function(a){return state.solo!=null?(mRuns(a)||[])[state.solo]:mMean(a);};
+   var mmax=0;
+   ARMS.forEach(function(a){if(!armOn(a))return;(mPick(a)||[]).forEach(function(p){var v=pn(p.hi!=null?p.hi:(p.m!=null?p.m:p.y));if(v>mmax)mmax=v;});});
+   var Ymb=null;
+   if(mmax>0){
+     var mstep=niceStep(mmax/4), mtop=Math.ceil(mmax/mstep)*mstep||1;
+     Ymb=function(v){return yb-(v/mtop)*(yb-yt);};   // v is per-node MB/s
+     for(var mv=0;mv<=mtop+1e-9;mv+=mstep)
+       s.push('<text class="y2tick" x="'+(x1+4)+'" y="'+(Ymb(mv)+2).toFixed(1)+'" text-anchor="start">'+Math.round(mv)+'</text>');
+     s.push('<text class="axtitle" transform="rotate(-90 '+(x1+30)+' '+((yt+yb)/2)+')" x="'+(x1+30)+'" y="'+((yt+yb)/2)+'" text-anchor="middle">'+mbTitle+'</text>');
+     ARMS.forEach(function(a){ if(!armOn(a))return; var col=colOf[a];
+       if(state.solo!=null){ var pl=(mRuns(a)||[])[state.solo]; if(pl){var cc=clipPts(pl,xmin,xmax); if(cc.length>=2)
+         s.push('<path class="mbln" style="stroke:'+col+'" d="'+cc.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Ymb(pn(p.y)).toFixed(1);}).join(' ')+'"/>'); } }
+       else { var mean=mMean(a); if(mean&&mean.length>=2){ var cc=clipPts(mean,xmin,xmax);
+         SHELLS.forEach(function(sh){var f=sh[0],op2=sh[1];
+           var top=cc.map(function(p){return [X(p.x),Ymb(Math.max(0,pn(p.m+f*p.s)))];});
+           var bot=cc.map(function(p){return [X(p.x),Ymb(Math.max(0,pn(p.m-f*p.s)))];});
+           s.push('<polygon class="dlband" points="'+top.concat(bot.reverse()).map(function(q){return q[0].toFixed(1)+','+q[1].toFixed(1);}).join(' ')+'" style="fill:'+col+';opacity:'+op2+'"/>');});
+         s.push('<path class="mbln" style="stroke:'+col+'" d="'+cc.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Ymb(pn(p.m)).toFixed(1);}).join(' ')+'"/>'); } }
+     });
+   }
+   // Register the download chart with the shared cursor: %downloaded (or elapsed-to-%
+   // in %-mode) on the left scale + MB/s on the right scale. The head above the graph
+   // reads "dur · %downloaded · MB/s".
+   (function(){
+     var cser=[];
+     ARMS.forEach(function(a){ if(!armOn(a))return; var col=colOf[a];
+       if(elapsed){ cser.push({color:col, y:function(v){return Y(cl(v));}, fmt:function(v){return Math.round(v)+'%';},
+         at:function(cxv){var c=state.solo!=null?(meta.dlRuns[a]||[])[state.solo]:meta.dl[a]; return c?interp2(c,cxv):null;}}); }
+       else { cser.push({color:col, y:function(v){return Y(v);}, fmt:function(v){return Math.round(v)+'s';},
+         at:function(cxv){var c=state.solo!=null?(meta.epRuns[a]||[])[state.solo]:meta.ep[a]; return c?interp2(c,cxv):null;}}); }
+     });
+     if(Ymb){ ARMS.forEach(function(a){ if(!armOn(a))return; var col=colOf[a];
+       cser.push({color:col, y:function(v){return Ymb(pn(v));}, fmt:function(v){return Math.round(pn(v))+' MB/s';}, at:function(cxv){
+         if(state.solo!=null){var pl=(mRuns(a)||[])[state.solo];return pl?interp2(pl,cxv):null;}
+         var mn=mMean(a);return (mn&&mn.length)?interp(mn,cxv):null;}});
+     }); }
+     var mAt=function(cxv){var v=null;ARMS.forEach(function(a){if(!armOn(a)||v!=null)return;
+       var mn=state.solo!=null?(mRuns(a)||[])[state.solo]:mMean(a);
+       if(mn&&mn.length){var q=state.solo!=null?interp2(mn,cxv):interp(mn,cxv);if(q!=null)v=q;}});return v;};
+     var pcAt=function(cxv){var v=null;ARMS.forEach(function(a){if(!armOn(a)||v!=null)return;
+       var c=state.solo!=null?(meta.dlRuns[a]||[])[state.solo]:meta.dl[a];if(c){var q=interp2(c,cxv);if(q!=null)v=q;}});return v;};
+     var d0=elapsed?meta.dl[armOn('ctl')?'ctl':'exp']:meta.ep[armOn('ctl')?'ctl':'exp'];
+     var g0=(d0&&d0.length)?d0.map(function(p){return p.x;}):null;
+     CURSORS['__dl__']={x0:x0,x1:x1,xmin:xmin,xmax:xmax,yt:yt,yb:yb,W:W,gridX:g0,series:cser,
+       head:function(cxv){ var pc=pcAt(cxv), mv=mAt(cxv);
+         var h=elapsed?(Math.round(cxv)+'s'):(Math.round(pc!=null?pc:cxv)+'%');
+         if(elapsed&&pc!=null)h+=' · '+Math.round(pc)+'%';
+         if(mv!=null)h+=' · '+Math.round(pn(mv))+' MB/s';
+         return h; }};
+   })();
+   // Drag-to-zoom / click-to-cycle hit area; the shared cursor draws into the layer.
+   s.push('<rect class="scrubhit" x="'+x0+'" y="'+yt+'" width="'+(x1-x0)+'" height="'+(yb-yt)+'" fill="transparent" pointer-events="all" '+
+     'data-op="__dl__" data-x0="'+x0+'" data-x1="'+x1+'" data-xmin="'+xmin+'" data-xmax="'+xmax+'" data-yt="'+yt+'" data-yb="'+yb+'"/>');
+   s.push('<g class="cursorlayer" data-op="__dl__"></g>');
+   s.push('</svg>');
+   host.innerHTML=s.join('');
+ }
+ function redraw(){CURSORS={};Object.keys(D).forEach(function(op){
+   var el=document.querySelector('.chart[data-op="'+op+'"]');if(el)el.innerHTML=build(op);});
+   buildDownload();}
+ // Re-render the per-op tables to match the run selection: a specific run shows
+ // that run's crossing values, avg/all show the aggregate. Reads ctx from window.
+ function refreshTables(){
+   var C=window.__CTX__, CO=window.ORCORE; if(!C||!CO)return;
+   Object.keys(D).forEach(function(op){
+     var box=document.querySelector('.optbl[data-op="'+op+'"]'); if(!box)return;
+     box.innerHTML=CO.op_time_table(op, C.series[op], C.dual, C.control_label, C.experiment_label||"B", C.timeRows, state.solo, state.armMode);
+   });
+   var dlt=document.querySelector('.dltbl'); if(dlt) dlt.innerHTML=CO.time_to_stall_table(C, state.armMode);
+ }
+ // Zoom range is driven entirely by drag-to-select and click-to-reset; this just
+ // reflects the zoomed state on <body> so the plot shows the zoom-out cursor.
+ function syncRange(){ document.body.classList.toggle('zoomed', !isFull()); }
+ // The single arm eligible for per-run selection, and its run count. Individual
+ // runs are offered only when one arm is in view: a single-arm report always, or
+ // A/B once the arm cycle narrows to A or B. In A/B-both there's no such arm, so
+ // no per-run entries (run i of A and run i of B are unrelated executions).
+ function activeArmInfo(){
+   var C=window.__CTX__||{};
+   if(!window.__DUAL__ || state.armMode==='A') return {arm:'ctl', n:C.n_ctl||0};
+   if(state.armMode==='B') return {arm:'exp', n:C.n_exp||0};
+   return {arm:null, n:0};
+ }
+ // Rebuild the plot dropdown to match the arm in view, dropping a now-invalid solo
+ // selection (e.g. run 5 of B after cycling to A which has fewer runs, or any run
+ // after returning to A/B-both).
+ function rebuildPlotOptions(){
+   var ps=document.querySelector('[data-plotsel]'); if(!ps) return;
+   var n=activeArmInfo().n;
+   if(state.solo!=null && state.solo>=n){ state.solo=null; state.plot='avg'; }
+   var opts='<option value="avg">summary</option><option value="all">all</option>';
+   for(var i=0;i<n;i++) opts+='<option value="'+i+'">run '+(i+1)+'</option>';
+   ps.innerHTML=opts;
+   ps.value=(state.solo!=null?String(state.solo):state.plot);
+ }
+ function sync(){
+   document.querySelectorAll('[data-pct]').forEach(function(b){b.classList.toggle('on',!!state[b.dataset.pct]);});
+   document.querySelectorAll('[data-scale]').forEach(function(b){b.classList.toggle('on',state.scale===b.dataset.scale);});
+   document.querySelectorAll('[data-xmode]').forEach(function(b){b.classList.toggle('on',state.xmode===b.dataset.xmode);});
+   var ac=document.querySelector('[data-armcycle]');
+   if(ac){ var e=function(t){return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};
+     var cA='<span style="color:var(--ctl-p95)">'+e(LAB.ctl)+'</span>';
+     var cB='<span style="color:var(--lh-p95)">'+e(LAB.exp)+'</span>';
+     ac.innerHTML = state.armMode==='both' ? (cA+' + '+cB) : state.armMode==='A' ? cA : cB; }
+   rebuildPlotOptions();
+   var qb=document.querySelector('[data-qps]'); if(qb) qb.classList.toggle('on',state.qps);
+   PMETS.forEach(function(m){document.body.classList.toggle('hide-'+m,!state[m]);});
+   syncRange();
+ }
+ document.addEventListener('change',function(e){
+   var ps=e.target.closest&&e.target.closest('[data-plotsel]');if(!ps)return;
+   var v=ps.value;
+   if(v==='avg'||v==='all'){ state.plot=v; state.solo=null; }   // summary / all-runs
+   else{ state.solo=+v; }                                       // a specific run
+   sync(); redraw(); refreshTables();
+ });
+ document.addEventListener('click',function(e){
+   var b=e.target.closest('[data-pct],[data-qps],[data-scale],[data-xmode],[data-armcycle]');if(!b)return;
+   if(b.dataset.pct){state[b.dataset.pct]=!state[b.dataset.pct];}
+   else if(b.hasAttribute('data-qps')){state.qps=!state.qps;}
+   else if(b.dataset.xmode){state.xmode=b.dataset.xmode;}
+   else if(b.hasAttribute('data-armcycle')){
+     state.armMode = state.armMode==='both' ? 'A' : state.armMode==='A' ? 'B' : 'both';
+     sync();redraw();refreshTables();return;                 // arm view changes the tables too
+   }
+   else{state.scale=b.dataset.scale;}
+   sync();redraw();
+ });
+ // ---- Synced cursor ----
+ var SVGNS='http://www.w3.org/2000/svg';
+ var lastCx=null;
+ function interp2(c,xq){ // c:[{x,y}]
+   if(!c.length||xq<c[0].x||xq>c[c.length-1].x)return null;
+   for(var i=1;i<c.length;i++){if(c[i].x>=xq){var a=c[i-1],b=c[i];
+     if(b.x===a.x)return b.y;return a.y+(b.y-a.y)*(xq-a.x)/(b.x-a.x);}}
+   return c[c.length-1].y;
+ }
+ function mk(name,attrs,text){var e=document.createElementNS(SVGNS,name);
+   for(var k in attrs)e.setAttribute(k,attrs[k]);if(text!=null)e.textContent=text;return e;}
+ function clearCursors(){var ls=document.querySelectorAll('.cursorlayer');
+   for(var i=0;i<ls.length;i++){while(ls[i].firstChild)ls[i].removeChild(ls[i].firstChild);}}
+ // Registry-driven: draw the vertical + head + each registered series' dot/label on
+ // EVERY chart's cursor layer, so hovering any plot annotates all of them in sync.
+ function drawCursor(xv,noClear){
+   for(var op in CURSORS){ var c=CURSORS[op];
+     var hit=document.querySelector('.scrubhit[data-op="'+op+'"]'); if(!hit||!hit.ownerSVGElement)continue;
+     var layer=hit.ownerSVGElement.querySelector('.cursorlayer[data-op="'+op+'"]'); if(!layer)continue;
+     if(!noClear)while(layer.firstChild)layer.removeChild(layer.firstChild);
+     // Charts have different viewBox widths (per-op 520, agg/download 760) but render
+     // at the same on-screen width, so a fixed font-size renders inconsistently. Scale
+     // cursor text/dots by W so they come out the same visual size on every chart.
+     var fs=(c.W||760)/520, r=(2.3*fs);
+     var cxv=Math.max(c.xmin,Math.min(xv,c.xmax));
+     var px=c.x0+((cxv-c.xmin)/(c.xmax-c.xmin))*(c.x1-c.x0);
+     layer.appendChild(mk('line',{'class':'scrub',x1:px.toFixed(1),y1:c.yt,x2:px.toFixed(1),y2:c.yb}));
+     var hd=c.head&&c.head(cxv);
+     if(hd){var ht=mk('text',{'class':'curhead',x:px.toFixed(1),y:(c.yt-1),'text-anchor':'middle'},hd);ht.style.fontSize=(6*fs).toFixed(1)+'px';layer.appendChild(ht);}
+     for(var si=0;si<c.series.length;si++){ var sp=c.series[si]; var v=sp.at(cxv);
+       if(v==null||isNaN(v))continue; var py=sp.y(v); if(py==null||isNaN(py))continue;
+       var dot=mk('circle',{'class':'curdot',r:r.toFixed(2),cx:px.toFixed(1),cy:py.toFixed(1)}); dot.style.fill=sp.color; layer.appendChild(dot);
+       var lab=mk('text',{'class':'curlab',x:(px+r+1).toFixed(1),y:(py-2).toFixed(1)}, sp.fmt(v)); lab.style.fill=sp.color; lab.style.fontSize=(6.5*fs).toFixed(1)+'px'; layer.appendChild(lab);
+     }
+   }
+ }
+ // ---- Drag-to-zoom (elapsed mode only): drag a horizontal band to set range ----
+ var drag=null;
+ function hitToElapsed(hit,e){
+   var x0=+hit.getAttribute('data-x0'),x1=+hit.getAttribute('data-x1'),xmin=+hit.getAttribute('data-xmin'),xmax=+hit.getAttribute('data-xmax');
+   var svg=hit.ownerSVGElement,r=svg.getBoundingClientRect();
+   var vx=(e.clientX-r.left)/r.width*svg.viewBox.baseVal.width;
+   var xv=xmin+(vx-x0)/(x1-x0)*(xmax-xmin);if(xv<xmin)xv=xmin;if(xv>xmax)xv=xmax;return xv;
+ }
+ // Snap an elapsed value to the nearest sample (30s cadence), matching the cursor's
+ // snapping — so a zoom bound is exactly the reading the cursor showed when pressed/
+ // released, and the drag preview equals what you'll get.
+ function snapCad(x){var v=Math.round(x/CAD)*CAD; if(v<0)v=0; var hi=Math.floor(XMAX/CAD)*CAD; if(v>hi)v=hi; return v;}
+ function drawSelection(op,a,b,noClear){
+   var hit=document.querySelector('.scrubhit[data-op="'+op+'"]');if(!hit)return;
+   var layer=hit.ownerSVGElement.querySelector('.cursorlayer[data-op="'+op+'"]');if(!layer)return;
+   if(!noClear)while(layer.firstChild)layer.removeChild(layer.firstChild);
+   var x0=+hit.getAttribute('data-x0'),x1=+hit.getAttribute('data-x1'),xmin=+hit.getAttribute('data-xmin'),xmax=+hit.getAttribute('data-xmax');
+   var yt=+hit.getAttribute('data-yt'),yb=+hit.getAttribute('data-yb');
+   function px(v){return x0+((v-xmin)/(xmax-xmin))*(x1-x0);}
+   var pa=px(Math.min(a,b)),pb=px(Math.max(a,b));
+   layer.appendChild(mk('rect',{'class':'selrect',x:pa.toFixed(1),y:yt,width:(pb-pa).toFixed(1),height:(yb-yt)}));
+ }
+ document.addEventListener('mousedown',function(e){
+   var hit=e.target.closest&&e.target.closest('.scrubhit');if(!hit)return;
+   // Track every press: a plain click (no drag) resets the zoom, a drag zooms.
+   // Drag-to-zoom itself is elapsed-only (handled on move/up).
+   drag={hit:hit,op:hit.getAttribute('data-op'),startXv:snapCad(hitToElapsed(hit,e)),
+         startClientX:e.clientX,curXv:null,moved:false};
+   e.preventDefault();
+ });
+ document.addEventListener('mousemove',function(e){
+   if(drag){                                          // dragging: draw selection + live readout
+     var xv=snapCad(hitToElapsed(drag.hit,e));drag.curXv=xv;
+     if(Math.abs(e.clientX-drag.startClientX)>4)drag.moved=true;
+     if(drag.moved&&state.xmode==='elapsed'){        // zoom-select is elapsed-only
+       clearCursors();
+       drawSelection(drag.op,drag.startXv,xv,true);
+       // Keep the snapped cursor readout on the leading edge so you can see the value
+       // you'd zoom to if you released now (same snapping as the final bound).
+       drawCursor(xv,true);
+     }
+     return;
+   }
+   var hit=e.target.closest?e.target.closest('.scrubhit'):null;if(!hit)return;
+   var op=hit.getAttribute('data-op'), c=CURSORS[op]; if(!c)return;
+   var svg=hit.ownerSVGElement,r=svg.getBoundingClientRect();
+   var vx=(e.clientX-r.left)/r.width*svg.viewBox.baseVal.width;
+   var xv=c.xmin+(vx-c.x0)/(c.x1-c.x0)*(c.xmax-c.xmin);if(xv<c.xmin)xv=c.xmin;if(xv>c.xmax)xv=c.xmax;
+   if(c.gridX&&c.gridX.length){var g=c.gridX,best=g[0],bd=Math.abs(best-xv);
+     for(var i=1;i<g.length;i++){var dd=Math.abs(g[i]-xv);if(dd<bd){bd=dd;best=g[i];}}xv=best;}
+   if(xv===lastCx)return;lastCx=xv;
+   drawCursor(xv);
+ });
+ document.addEventListener('mouseup',function(e){
+   if(!drag)return;var d=drag;drag=null;clearCursors();
+   if(d.moved && state.xmode==='elapsed' && d.curXv!=null){       // drag -> zoom
+     // Bounds were snapped to the sample cadence at capture (matching the cursor), so
+     // the window is exactly the readings shown during the drag.
+     var a=Math.min(d.startXv,d.curXv), b=Math.max(d.startXv,d.curXv);
+     if(b-a>=CAD){state.range.start=a;state.range.end=b;syncRange();redraw();}
+   } else if(!d.moved){                                           // plain click (no drag)
+     if(!isFull()){ state.range.start=0; state.range.end=XMAX; syncRange(); redraw(); }  // un-zoom
+     else if(window.__DUAL__){                                    // nothing to un-zoom -> cycle the arm shown
+       state.armMode = state.armMode==='both' ? 'A' : state.armMode==='A' ? 'B' : 'both';
+       sync(); redraw(); refreshTables();
+     }
+   }
+ });
+ document.addEventListener('mouseout',function(e){
+   if(drag)return;
+   if(e.target.closest&&e.target.closest('.scrubhit')){lastCx=null;clearCursors();}
+ });
+ // ---- Click-to-copy (provenance cells) + copy-link (arms -> URL hash) ----
+ function copyText(t){
+   if(navigator.clipboard&&navigator.clipboard.writeText)return navigator.clipboard.writeText(t);
+   return new Promise(function(res,rej){var ta=document.createElement('textarea');
+     ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.focus();ta.select();
+     try{document.execCommand('copy');res();}catch(err){rej(err);}finally{document.body.removeChild(ta);}});
+ }
+ document.addEventListener('click',function(e){
+   var el=e.target.closest?e.target.closest('[data-copy]'):null;if(!el)return;
+   copyText(el.getAttribute('data-copy'));
+   el.classList.add('copied');setTimeout(function(){el.classList.remove('copied');},900);
+ });
+ document.addEventListener('click',function(e){
+   var b=e.target.closest&&e.target.closest('[data-copylink]');if(!b)return;
+   var enc=window.__ENCODE_ARMS__&&window.__ENCODE_ARMS__();
+   if(!enc){b.textContent='no data';setTimeout(function(){b.textContent='copy link';},1200);return;}
+   var url=location.origin+location.pathname+'#'+enc;
+   copyText(url);b.classList.add('copied');var t=b.textContent;b.textContent='copied!';
+   setTimeout(function(){b.classList.remove('copied');b.textContent=t;},1100);
+ });
+ sync();redraw();
+})();
+}
+</script>
+
+<script>
+// ---------------------------------------------------------------------------
+// Bootstrap: resolve the data source, render the report (or the file picker),
+// and hand off to the chart renderer.
+// ---------------------------------------------------------------------------
+(function(){
+ var CORE = window.ORCORE;
+
+ // Unicode-safe base64url of the arms JSON. NOTE: very large multi-run payloads
+ // can exceed practical URL lengths, so the hash path is best for single-run /
+ // small payloads; host injection and the file picker cover the rest.
+ function b64urlEncode(str){
+   var bytes=new TextEncoder().encode(str),bin='';
+   for(var i=0;i<bytes.length;i++)bin+=String.fromCharCode(bytes[i]);
+   return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+ }
+ // Decode a payload from the URL fragment / a pasted link into the arms object. The
+ // encoder (roachtest / the launcher) gzips before base64url to keep links short, so we
+ // sniff the gzip magic (1f 8b) and inflate via DecompressionStream; a plain (un-gzipped)
+ // base64url payload — e.g. the in-browser copy-link — still decodes as before. Async
+ // because DecompressionStream is stream-based.
+ async function decodePayload(s){
+   s=s.replace(/-/g,'+').replace(/_/g,'/');
+   var bin=atob(s),bytes=new Uint8Array(bin.length);
+   for(var i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);
+   var text;
+   if(bytes.length>1 && bytes[0]===0x1f && bytes[1]===0x8b){
+     var stream=new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+     text=await new Response(stream).text();
+   } else {
+     text=new TextDecoder().decode(bytes);
+   }
+   return JSON.parse(text);
+ }
+ // Exposed so the copy-link button can encode the currently-rendered arms.
+ window.__ENCODE_ARMS__=function(){
+   try{ if(!window.__ARMS__)return null; return b64urlEncode(JSON.stringify(window.__ARMS__)); }
+   catch(e){ return null; }
+ };
+
+ // ---- arm catalog (any number of arms) + selector (pick 1 to view, 2 to compare) ----
+ // The injected/hash payload is a CATALOG of all bundled arms. The rendering path only
+ // ever handles 1-2 arms whose color roles are positional (arms[0]->ctl/orange,
+ // arms[1]->exp/blue), so a thin selector picks 1-2 catalog entries and feeds the
+ // unchanged renderReport. CATALOG holds the full set; SEL is a fixed [slotA, slotB]
+ // pair of catalog indices (null = empty). Slots are stable: un-picking one keeps the
+ // other in place (so a partner arm doesn't change color mid-comparison).
+ var CATALOG=null, SEL=[null,null];
+ function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){
+   return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+ var MON=['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+ // Parse an arm's yymmdd-HHMMSS stamp into display components; fall back to `name` if
+ // there's no stamp (e.g. --teamcity's bare run_N layout).
+ function armTsFields(a){
+   var ts=a&&a.ts, ab=(a&&a.ab)||null;
+   var m=ts&&/^(\d{2})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/.exec(ts);
+   if(!m){ var nm=(a&&a.name)||(a&&a.label)||'?'; return {date:nm,hm:nm,hms:nm,ab:ab}; }
+   return {date:(MON[(+m[2])-1]||('M'+m[2]))+m[3], hm:m[4]+':'+m[5], hms:m[4]+':'+m[5]+':'+m[6], ab:ab};
+ }
+ // Minimal-distinguishing names for a set of arms: the coarsest of {date, HHMM, HHMMSS,
+ // +A/B} that makes all names unique. Dates are dropped when they don't vary (so a
+ // same-day pair shows just the time); the a/b suffix disambiguates same-timestamp
+ // --ab arms. Called with the catalog (picker) and with the shown pair (header), so an
+ // arm's header name is as short as the pair allows.
+ function labelArms(arms){
+   var F=arms.map(armTsFields);
+   var multiDate=(new Set(F.map(function(x){return x.date;}))).size>1;
+   function uniq(a){var s={};for(var i=0;i<a.length;i++){if(s[a[i]])return false;s[a[i]]=1;}return true;}
+   function gen(gran,ab){ return F.map(function(x){
+     var v=(multiDate&&x.date?x.date+'-':'')+(gran==='hms'?x.hms:x.hm);
+     if(ab&&x.ab) v+='-'+x.ab.toUpperCase();
+     return v; }); }
+   var cands=[];
+   if(multiDate) cands.push(F.map(function(x){return x.date;}));   // date alone
+   cands.push(gen('hm',false), gen('hms',false), gen('hm',true), gen('hms',true));
+   for(var i=0;i<cands.length;i++){ if(uniq(cands[i])) return cands[i]; }
+   return gen('hms',true).map(function(s,i){return s+'#'+(i+1);});  // last resort
+ }
+ // Average observed run duration (max elapsed sample across download + per-op samples),
+ // shown per arm in the picker.
+ function armDurAvg(a){
+   if(!a||!a.runs||!a.runs.length) return null;
+   var tot=0,n=0;
+   a.runs.forEach(function(r){
+     var mx=0;
+     if(r&&r.download) r.download.forEach(function(row){ if(row[0]>mx)mx=row[0]; });
+     if(r&&r.samples) for(var op in r.samples) r.samples[op].forEach(function(row){ if(row[0]>mx)mx=row[0]; });
+     if(mx>0){ tot+=mx; n++; }
+   });
+   return n?tot/n:null;
+ }
+ function fmtDur(s){ if(s==null)return''; s=Math.round(s);
+   var m=Math.floor(s/60); return m?(m+'m'+(s%60?(' '+(s%60)+'s'):'')):(s+'s'); }
+ // Build the 1-2 arms to render from the slot pair: clone (so the catalog survives),
+ // and set each arm's display label to its minimal name for this pair. Settings stay
+ // raw — CORE diffs the pair itself. Order is [slotA, slotB] with empty slots dropped,
+ // so the surviving arm of a partial selection renders solo.
+ function armsForSelection(){
+   var chosen=[SEL[0],SEL[1]].filter(function(x){return x!=null;})
+     .map(function(i){return CATALOG[i];}).filter(Boolean);
+   if(!chosen.length) chosen=[CATALOG[0]];
+   var names=labelArms(chosen);
+   return chosen.map(function(a,i){ var c=Object.assign({},a); c.label=names[i]; return c; });
+ }
+ function armBarHTML(){
+   if(!CATALOG || CATALOG.length<2) return '';
+   var names=labelArms(CATALOG), bothFull=(SEL[0]!=null&&SEL[1]!=null);
+   var chips=CATALOG.map(function(a,i){
+     var role=(SEL[0]===i?0:SEL[1]===i?1:-1), dim=(bothFull&&role<0);
+     var cls='armchip'+(role>=0?(' sel sel'+(role===0?'A':'B')):'')+(dim?' dim':'');
+     var sub=[]; var d=armDurAvg(a); if(d!=null) sub.push(fmtDur(d));
+     if(a.sha) sub.push(a.sha.slice(0,8));
+     var sk=a.settings?Object.keys(a.settings):[];
+     if(sk.length) sub.push(sk.length===1?sk[0].split('.').pop():sk.length+' settings');
+     return '<button class="'+cls+'" data-armchip="'+i+'" type="button"'+(dim?' aria-disabled="true"':'')+'>'
+       +'<span class="armname">'+esc(names[i])+'</span>'
+       +(sub.length?'<span class="armsub">'+esc(sub.join(' · '))+'</span>':'')
+       +'</button>';
+   }).join('');
+   return '<div class="armbar" data-armbar>'+chips+'</div>';
+ }
+ // Render the current selection, then re-insert the selector bar (render_body owns
+ // document.body, so the bar must be prepended after each render). With nothing picked
+ // we clear the report and show just the picker.
+ function renderView(){
+   if(SEL[0]==null && SEL[1]==null){
+     document.body.className='';
+     document.body.innerHTML='<p class="armempty">Nothing selected — pick an arm to view, or two to compare.</p>';
+   } else {
+     renderReport(armsForSelection());
+     // Survivor of a comparison that sits in slot B keeps the blue (exp) palette.
+     if(SEL[0]==null && SEL[1]!=null) document.body.classList.add('soloB');
+   }
+   var bar=armBarHTML();
+   if(bar) document.body.insertAdjacentHTML('afterbegin', bar);
+ }
+ // Chip click: fill the first empty slot; clicking a selected chip un-picks it (down to
+ // an empty selection). With both slots full the other chips are greyed — you must
+ // un-pick before swapping, which keeps the surviving partner in its slot/color.
+ document.addEventListener('click',function(e){
+   var chip=e.target.closest&&e.target.closest('[data-armchip]'); if(!chip)return;
+   e.preventDefault();
+   var i=+chip.getAttribute('data-armchip');
+   var pos=(SEL[0]===i?0:SEL[1]===i?1:-1);
+   if(pos>=0){ SEL[pos]=null; }            // un-pick (may leave nothing selected)
+   else if(SEL[0]==null){ SEL[0]=i; }
+   else if(SEL[1]==null){ SEL[1]=i; }
+   else { return; }                        // both full -> greyed; ignore until an un-pick
+   renderView();
+ });
+
+ // ---- "compare" (single-arm reports): paste another report's link to view A vs B ----
+ // Clicking the link reveals a text box; pasting a report URL (or its #hash) decodes
+ // that report's first arm, pairs it with the current arm as B, updates the hash to
+ // the combined pair, and re-renders in place.
+ document.addEventListener('click',function(e){
+   var c=e.target.closest&&e.target.closest('[data-cmp]');if(!c)return;
+   e.preventDefault();
+   var box=document.querySelector('[data-cmpbox]');
+   if(box){ c.style.display='none'; box.style.display=''; box.focus(); }
+ });
+ async function doCompare(box){
+   var val=(box.value||'').trim(); if(!val)return;
+   var h=val.indexOf('#')>=0?val.slice(val.indexOf('#')+1):val;   // accept full URL or bare hash
+   var pasted=null; try{ pasted=await decodePayload(h); }catch(err){}
+   if(!pasted||!pasted.length||!window.__ARMS__||!window.__ARMS__.length){
+     box.classList.add('bad'); box.value=''; box.placeholder='couldn’t read that link — paste a report URL'; return;
+   }
+   var a=Object.assign({},window.__ARMS__[0]);
+   var b=Object.assign({},pasted[0]);
+   var nm=labelArms([a,b]); a.label=nm[0]; b.label=nm[1];
+   var combined=[a,b];
+   try{ location.hash=b64urlEncode(JSON.stringify(combined)); }catch(err){}
+   renderReport(combined);
+ }
+ document.addEventListener('keydown',function(e){
+   var box=e.target.closest&&e.target.closest('[data-cmpbox]');if(!box)return;
+   if(e.key==='Enter'){ e.preventDefault(); doCompare(box); }
+ });
+ document.addEventListener('paste',function(e){
+   var box=e.target.closest&&e.target.closest('[data-cmpbox]');if(!box)return;
+   setTimeout(function(){ doCompare(box); },0);   // let the pasted text land first
+ });
+
+ function renderReport(arms){
+   window.__ARMS__=arms;                     // keep for copy-link round-trip
+   var ctx=CORE.analyze(arms);
+   document.title=(ctx.dual?ctx.control_label+' vs '+ctx.experiment_label:ctx.control_label)+' — online restore';
+   document.body.className='hide-p95';
+   document.body.innerHTML=CORE.render_body(ctx);
+   window.__CHART__=ctx.chartData;
+   window.__LABELS__=ctx.labels;
+   window.__DUAL__=ctx.dual;
+   window.__XMAXEL__=ctx.xmax_el;
+   window.__CTX__=ctx;                 // for run-solo table re-rendering
+   // CRDB node count (from the test name, e.g. ".../nodes=5/...") so the download
+   // chart can show per-node MB/s. null -> unknown -> show cluster-total MB/s.
+   window.__NODES__=(function(){for(var i=0;i<arms.length;i++){var t=arms[i]&&arms[i].test;
+     if(t){var m=/nodes=(\d+)/.exec(t);if(m)return +m[1];}}return null;})();
+   // Point each "open A/B ↗" link at a URL whose hash encodes ONLY that arm, so it
+   // opens as a standalone single-arm report in a new tab.
+   if(ctx.dual){
+     var links=document.querySelectorAll('[data-openarm]');
+     for(var i=0;i<links.length;i++){
+       var idx=+links[i].getAttribute('data-openarm'), arm=arms[idx];
+       if(!arm) continue;
+       try{ links[i].href=location.origin+location.pathname+'#'+b64urlEncode(JSON.stringify([arm])); }catch(e){}
+     }
+   }
+   __runChart();
+ }
+
+ // ---- File picker (find run_*/summary_report.json using find_run_dirs rules) ----
+ // Returns {arm} or throws with a human message (ambiguous multi-parent level).
+ function findRunsFromFiles(files, armLabel){
+   var byDepth={};   // depth -> [{rid, parent, file}]
+   for(var i=0;i<files.length;i++){
+     var f=files[i];
+     var path=f.webkitRelativePath||f.name;
+     var parts=path.split('/');
+     // locate a `run_<N>` dir immediately followed by summary_report.json (leaf).
+     var idx=-1;
+     for(var p=0;p<parts.length-1;p++){
+       if(/^run_\d+$/.test(parts[p]) && parts[p+1]==='summary_report.json' && p+2===parts.length){idx=p;break;}
+     }
+     if(idx<0)continue;
+     var rid=parseInt(parts[idx].slice(4),10);
+     var depth=idx-1;                          // relpath(run_dir, root) depth (root=parts[0])
+     var parent=parts.slice(0,idx).join('/');  // dir containing run_N
+     (byDepth[depth]=byDepth[depth]||[]).push({rid:rid,parent:parent,file:f});
+   }
+   var depths=Object.keys(byDepth).map(Number);
+   if(!depths.length)return null;
+   var level=byDepth[Math.min.apply(null,depths)];
+   var parents={};level.forEach(function(r){parents[r.parent]=1;});
+   if(Object.keys(parents).length>1){
+     var names=Object.keys(parents).map(function(p){return p.split('/').pop();}).sort().join(', ');
+     throw new Error('ambiguous artifact path: run_* dirs under multiple sibling directories ('
+       +names+'). Point the picker at a single arm\'s dir, not their common parent.');
+   }
+   var seen={},picked=[];
+   level.sort(function(a,b){return a.rid-b.rid;}).forEach(function(r){if(!(r.rid in seen)){seen[r.rid]=1;picked.push(r);}});
+   var rootName=(picked[0].file.webkitRelativePath||'').split('/')[0]||armLabel;
+   return {name:rootName, files:picked.map(function(r){return r.file;})};
+}
+ function readJSON(file){
+   return file.text().then(function(txt){return JSON.parse(txt);});
+ }
+ function buildArmFromFiles(files, label){
+   var found=findRunsFromFiles(files, label);
+   if(!found)return Promise.resolve(null);
+   return Promise.all(found.files.map(readJSON)).then(function(reports){
+     // Pass each report through whole ({download, samples}) so parse_run gets the
+     // download series alongside the per-op samples.
+     return {label:label, name:found.name, sha:null, settings:{}, buildTime:null, runTime:null,
+             runs:reports.map(function(rep){return rep||{};})};
+   });
+ }
+ function showPicker(){
+   document.body.className='';
+   document.body.innerHTML=
+     "<div class='picker'>"
+     +"<h1>online restore perf breakdown</h1>"
+     +"<p>No data injected. Pick each arm's artifact directory (the folder that "
+     +"contains the <code>run_*/summary_report.json</code> files). Arm A is required; "
+     +"arm B is optional (omit for a single-arm report).</p>"
+     +"<div class='arm'><label for='armA'>arm A (required)</label>"
+     +"<input id='armA' type='file' webkitdirectory directory multiple></div>"
+     +"<div class='arm'><label for='armB'>arm B (optional)</label>"
+     +"<input id='armB' type='file' webkitdirectory directory multiple></div>"
+     +"<button class='go' id='go' disabled>Generate report</button>"
+     +"<div class='err' id='err'></div>"
+     +"</div>";
+   var a=document.getElementById('armA'),b=document.getElementById('armB'),
+       go=document.getElementById('go'),err=document.getElementById('err');
+   function upd(){go.disabled=!(a.files&&a.files.length);}
+   a.addEventListener('change',upd);b.addEventListener('change',upd);
+   go.addEventListener('click',function(){
+     err.textContent='';
+     buildArmFromFiles(a.files,'A').then(function(armA){
+       if(!armA)throw new Error('arm A: no run_*/summary_report.json found.');
+       var arms=[armA];
+       var pB=(b.files&&b.files.length)?buildArmFromFiles(b.files,'B'):Promise.resolve(null);
+       return pB.then(function(armB){ if(armB)arms.push(armB); renderReport(arms); });
+     }).catch(function(e){ err.textContent=String(e.message||e); });
+   });
+ }
+
+ async function resolveAndRender(){
+   // Priority: (1) injected window.__ARMS__ -> (2) URL hash -> (3) file picker. The
+   // payload is the arm catalog; with >1 arm we show the selector (default: first arm
+   // solo) and let the user pick 1 to view or 2 to compare. With <=1 arm, render it.
+   var payload=null;
+   if(window.__ARMS__ && window.__ARMS__.length) payload=window.__ARMS__;
+   else if(location.hash && location.hash.length>1){
+     try{ payload=await decodePayload(location.hash.slice(1)); }
+     catch(e){ /* bad/partial payload -> fall through to picker */ }
+   }
+   if(payload && payload.length){
+     CATALOG=payload;
+     if(CATALOG.length<2){ SEL=[0,null]; renderReport(armsForSelection()); }
+     else {
+       // Two arms default to the comparison (the classic workflow); more than two
+       // default to the first arm solo so the user chooses the comparison pair.
+       SEL = CATALOG.length===2 ? [0,1] : [0,null];
+       renderView();
+     }
+     return;
+   }
+   showPicker();
+ }
+
+ if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',resolveAndRender);
+ else resolveAndRender();
+})();
+</script>
+</body></html>
