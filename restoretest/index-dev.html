@@ -1,0 +1,16 @@
+<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>online restore perf breakdown</title>
+<link rel="stylesheet" href="./src/styles.css">
+</head>
+<body class='hide-p95'>
+<!-- Host injection point: a Go host replaces the RHS / the marked line with the
+     arm catalog. Shape:
+       [{label,name,ts,ab,sha,dirty,settings,buildTime,runs:[samples[]]}].
+     One entry per arm (any number). `ts` is the run's yymmdd-HHMMSS stamp and `ab` is
+     'a'/'b' (roachtest --ab mode) or null; the report derives each arm's display name
+     from these (the minimal date/time that distinguishes the shown arms). `settings` is
+     the arm's full --start-setting map; the report diffs the chosen pair itself. -->
+<script>window.__ARMS__ = null; /*__ARMS_INJECT__*/</script>
+<script type="module" src="./src/main.ts"></script>
+</body></html>

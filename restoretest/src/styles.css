@@ -1,0 +1,339 @@
+:root{
+ --surface:#fcfcfb; --page:#f4f4f1; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+ --grid:#e8e7e1; --axis:#c3c2b7; --border:rgba(11,11,11,0.10);
+ --ctl-p50:#f4a06f; --ctl-p95:#e8712f; --ctl-p99:#b4470f;
+ --lh-p50:#86b6ef;  --lh-p95:#3987e5;  --lh-p99:#184f95;
+ --good:#006300; --bad:#c02a2a;
+}
+@media (prefers-color-scheme:dark){
+ :root{
+  --surface:#1a1a19; --page:#0d0d0d; --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.12);
+  --ctl-p50:#f4a06f; --ctl-p95:#e8712f; --ctl-p99:#b4470f;
+  --lh-p50:#9ac1f2;  --lh-p95:#3987e5;  --lh-p99:#256abf;
+  --good:#0ca30c; --bad:#e66767;
+ }
+}
+*{box-sizing:border-box}
+html{background:var(--page)}
+body{font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink);
+ max-width:min(1360px,92vw);margin:0 auto;padding:26px 24px 70px;background:var(--page);
+ /* The compact progress graph sheds height when it pins; scroll-anchoring would keep nudging
+    scrollY to compensate, which re-crosses the pin threshold and makes scrolling jump. Disable
+    it so the graph collapses once, cleanly, as you scroll past it. */
+ overflow-anchor:none}
+.tbl.prov th .chip{display:inline-block;width:11px;height:11px;border-radius:3px;
+ vertical-align:-1px;margin-right:5px}
+.ctrl{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;align-items:center;
+ justify-content:flex-end;gap:8px 14px;background:var(--surface);border:1px solid var(--border);
+ border-radius:12px;padding:10px 14px;margin:0 0 20px}
+/* A section header: the section title plus its (optional) section-level controls, sticky at
+   the SAME top as the global bar and left-justified over a transparent background, so once
+   pinned they read as one ribbon — this section's title/controls on the left, the global
+   controls on the right. Rides up with its sub-container and scrolls away when it does. */
+.ctrl.header{z-index:6;justify-content:flex-start;background:transparent;border:none;
+ border-radius:0;margin:0 0 10px;pointer-events:none}
+/* The header spans full width but only its title/controls are interactive; let clicks in
+   its empty right half fall through to the global control bar pinned beneath it. */
+.ctrl.header>*{pointer-events:auto}
+.ctrl .htitle{font-size:18px;font-weight:640;letter-spacing:-0.01em;margin-right:2px}
+/* A graph title plus that graph's own controls: like a header, but NOT sticky — it scrolls
+   with the graph it labels (graph-specific controls belong to one plot, not the section). */
+.ctrl.gtitle{position:static;z-index:auto;justify-content:flex-start;background:transparent;
+ border:none;border-radius:0;padding:0;margin:16px 0 4px}
+.ctrl .gtitletxt{font-size:14px;font-weight:640;letter-spacing:-0.01em;margin-right:2px}
+.ctrl .cl{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;
+ font-weight:600}
+.ctrl button{font:inherit;font-size:13px;font-weight:600;cursor:pointer;
+ border:1px solid var(--border);background:var(--page);color:var(--ink2);
+ border-radius:8px;padding:4px 12px;transition:all .12s}
+.ctrl button:hover{border-color:var(--axis)}
+.ctrl button.on{background:var(--ink);color:var(--surface);border-color:var(--ink)}
+.ctrl .plotsel{font:inherit;font-size:13px;font-weight:600;color:var(--ink2);background:var(--page);
+ border:1px solid var(--border);border-radius:8px;padding:4px 8px;cursor:pointer}
+/* Segmented control: buttons within a .seg read as one connected switch. */
+.ctrl .seg{display:inline-flex}
+.ctrl .seg button{border-radius:0;border-left-width:0}
+.ctrl .seg button:first-child{border-top-left-radius:8px;border-bottom-left-radius:8px;border-left-width:1px}
+.ctrl .seg button:last-child{border-top-right-radius:8px;border-bottom-right-radius:8px}
+.ctrl .seg button.on{position:relative;z-index:1}
+.ctrl .note{font-size:10.5px;color:var(--muted);margin-left:auto;opacity:0.85}
+.ctrl .note .chip{display:inline-block;width:10px;height:10px;border-radius:3px;
+ vertical-align:-1px;margin:0 3px 0 8px}
+section{background:var(--surface);border:1px solid var(--border);border-radius:14px;
+ padding:16px 18px 10px;margin:14px 0}
+/* The Details section is the lower half of the arm-ribbon card: drop its top border/radius and
+   top margin so it joins seamlessly under the ribbon strip (the ribbon supplies the top edge). */
+.details{margin-top:0;border-top:none;border-top-left-radius:0;border-top-right-radius:0}
+h2{font-size:18px;font-weight:640;margin:0 0 8px;letter-spacing:-0.01em}
+h3{font-size:14px;font-weight:640;margin:16px 0 4px;letter-spacing:-0.01em}
+.chart{margin:2px 0 8px;min-height:40px;position:relative}
+svg .grid{stroke:var(--grid);stroke-width:1}
+svg .axis{stroke:var(--axis);stroke-width:1}
+svg .ln{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+svg .qpsln{fill:none;stroke-width:1.5;stroke-dasharray:1.5 3;stroke-linecap:round;opacity:0.85;stroke-linejoin:round}  /* qps overlay: dotted */
+svg .mbln{fill:none;stroke-width:1.5;stroke-dasharray:5 3;opacity:0.85;stroke-linejoin:round}   /* download MB/s: dashed */
+svg .dlcurve{fill:none;stroke:var(--muted);stroke-width:1.5;stroke-dasharray:4 3;opacity:0.7}
+svg .dlband{fill:var(--muted);opacity:0.08;stroke:none}   /* download %: min-max spread */
+svg .rmfill{opacity:0.06;stroke:none}                     /* remote bytes: per-run min-max spread (additive) */
+svg .dldiam{stroke:var(--surface);stroke-width:0.6}       /* 30/60/90% download markers */
+svg .rln{fill:none;stroke-width:1;opacity:0.28;stroke-linejoin:round}  /* ensemble: per-run line */
+/* Hovering one run's line (via the fat transparent hit-path) bolds that run across every
+   chart and dims the rest, so a single run can be traced through all plots. */
+svg .rlnhit{fill:none;stroke:transparent;stroke-width:8;pointer-events:stroke;cursor:pointer}
+body.runhi svg .rln{opacity:0.07}
+body.runhi svg .ln{opacity:0.12}                 /* dim the mean line too while tracing a run */
+body.runhi svg .rln.hon{opacity:1;stroke-width:2}
+svg .dlrun{stroke-width:1;opacity:0.35}                    /* ensemble: per-run download curve */
+svg .msline{stroke:var(--muted);stroke-width:1;opacity:0.5;stroke-dasharray:2 2}   /* download milestone (grey) */
+svg .mslab{fill:var(--muted);font-size:6px;font-weight:600;font-family:system-ui,sans-serif}
+svg .scrub{stroke:var(--ink2);stroke-width:1;opacity:0.55}     /* synced cursor line */
+svg .curlab{font-size:6.5px;font-weight:700;font-family:system-ui,sans-serif;paint-order:stroke;
+ stroke:var(--surface);stroke-width:2px}
+svg .curhead{font-size:6px;font-weight:700;fill:var(--ink2);font-family:system-ui,sans-serif}
+svg .curdot{stroke:var(--surface);stroke-width:1}
+svg .ytick,svg .xtick,svg .y2tick{fill:var(--muted);font-size:6px;font-family:system-ui,sans-serif}
+svg .axtitle{fill:var(--muted);font-size:6px;font-family:system-ui,sans-serif}
+svg .endlab{font-size:7.5px;font-weight:640;font-family:system-ui,sans-serif}
+svg .pctlab{font-size:5.5px;fill:var(--muted);font-family:system-ui,sans-serif}
+.caveat{font-size:11px;color:var(--muted);margin:6px 2px 0}
+/* Gap between the stacked download tables (throughput / progress / distribution). */
+.tblgap{height:14px}
+/* Fixed layout + shared colgroup so the A/B/Δ/Δ%/p columns line up across those three tables. */
+.tbl.dlt{table-layout:fixed}
+table.tbl{border-collapse:collapse;width:100%;font-size:12.5px;
+ font-variant-numeric:tabular-nums;margin:2px 0}
+.tbl th,.tbl td{padding:4px 8px;text-align:right;border-bottom:1px solid var(--grid)}
+.tbl thead th{color:var(--ink2);font-weight:600;font-size:11px;text-transform:uppercase;
+ letter-spacing:0.03em;border-bottom:1px solid var(--axis)}
+.tbl td.l,.tbl th.l{text-align:left}
+.tbl td.l{font-weight:600}
+.tbl td.stage{font-weight:640;color:var(--ink)}
+.tbl .elap{color:var(--ink2);font-weight:500;font-size:11.5px;white-space:nowrap}
+.tbl th.grp{text-align:center;text-transform:none;font-size:12px;font-weight:700;
+ color:var(--ink);border-left:2px solid var(--page)}
+.tbl th.grpl,.tbl td.grpl{border-left:2px solid var(--page)}
+.tbl .unit{color:var(--muted);font-size:9.5px;margin-left:1px}
+.tbl .sd{color:var(--muted);font-size:10.5px;margin-left:5px}
+/* A non-significant difference dims only the delta cells (Δ / Δ% / p), not the per-arm values. */
+.tbl td.dim{opacity:0.45}
+.tbl td.pcol{font-weight:500}
+.tbl td.dcell{white-space:nowrap}
+.tbl .pval{font-size:15px}
+.tbl .dval{font-size:15px;font-weight:700}
+.tbl .pv{font-size:10.5px;margin-left:4px}
+.tbl .psig{color:var(--ink);font-weight:700}
+.tbl .pns{color:var(--bad);font-weight:600}
+body.hide-p50 .tbl [data-metric="p50"]{display:none}
+body.hide-p95 .tbl [data-metric="p95"]{display:none}
+body.hide-p99 .tbl [data-metric="p99"]{display:none}
+.copysha{cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px}
+.copysha.copied{color:var(--good);text-decoration:none}
+.tbl.prov td.copyable{cursor:pointer}
+.tbl.prov td.copyable.copied{color:var(--good)}
+.tbl.prov{table-layout:fixed}
+/* No divider under the last details row (e.g. "non-default settings"). */
+.tbl.prov tbody tr:last-child td{border-bottom:none}
+.tbl.prov td,.tbl.prov th{text-align:left;vertical-align:top;word-break:break-word}
+.tbl.prov td:first-child{color:var(--ink2);font-weight:600}
+.tbl.prov td.mid{text-align:center;position:relative}
+.tbl.prov td.mid .rowlabel{position:absolute;left:8px;top:4px;color:var(--ink2);
+ font-weight:600}
+.tbl.prov code{background:rgba(137,135,129,0.15);padding:1px 5px;border-radius:4px;
+ font-family:ui-monospace,Menlo,monospace;font-size:11.5px}
+.tbl.prov code.branch{color:var(--lh-p95);background:color-mix(in srgb,var(--lh-p95) 12%,transparent)}
+
+/* ---- additions not in the Python (client-side ingestion + share/zoom UI):
+        drag-to-zoom selection, copy link, analysis summary, file picker ---- */
+/* Reserve the button's space always (visibility, not display) so revealing it on zoom
+   doesn't reflow the right-aligned global bar and shift the other controls. */
+.ctrl .unzoom{visibility:hidden}
+body.zoomed .ctrl .unzoom{visibility:visible}
+/* Share: offload the (immutable) report data to the link store and copy a short
+   ref link. Right-aligned; the label doubles as status (sharing…/copied/failed). */
+.ctrl .sharebtn{margin-left:auto}
+.ctrl .unzoom+.sharebtn{margin-left:8px}   /* when reset-zoom is shown, sit beside it */
+.ctrl .sharebtn.busy{opacity:0.6;cursor:default}
+.ctrl .sharebtn.ok{color:var(--good);border-color:var(--good)}
+.ctrl .sharebtn.err{color:var(--bad);border-color:var(--bad)}
+svg .selrect{fill:var(--ink2);opacity:0.12}
+.picker{max-width:640px;margin:8vh auto 0}
+.picker h1{font-size:22px;font-weight:660;margin:0 0 6px}
+.picker p{color:var(--ink2);font-size:14px;margin:4px 0 18px}
+.picker .arm{display:flex;align-items:center;gap:12px;margin:10px 0}
+.picker .arm label{width:120px;font-weight:600}
+.picker .go{margin-top:16px;font:inherit;font-size:14px;font-weight:700;cursor:pointer;
+ border:1px solid var(--ink);background:var(--ink);color:var(--surface);border-radius:9px;
+ padding:8px 18px}
+.picker .go[disabled]{opacity:0.4;cursor:default}
+.picker .err{color:var(--bad);font-size:13px;margin-top:10px;white-space:pre-wrap}
+/* arm catalog picker: shown when >1 arm is bundled; pick 1 to view or 2 to compare. Prepended to
+   .report (spanning the whole scroll, NOT the short .details section) and sticky at top:0, so it
+   stays pinned to the top of the page throughout; its opaque background keeps content from bleeding
+   under it. Its height feeds --dash-arm-h (sticky.ts) so the graph/control bars pin below it. */
+.armbar{display:flex;flex-wrap:wrap;align-items:stretch;gap:8px;margin:0;
+ position:sticky;top:0;z-index:10;background:var(--surface);padding:12px 18px;
+ /* The card's header strip: full border + top radius, square/open bottom so it sits flush on
+    .details below (which drops its own top border/radius). Its bottom border is the divider
+    between the ribbon and the details rows, and stays intact when the ribbon pins on scroll. */
+ border:1px solid var(--border);border-radius:14px 14px 0 0}
+.armchip{position:relative;display:flex;font:inherit;text-align:left;border-radius:10px;
+ border:1px solid var(--border);background:var(--page);color:var(--ink2)}
+.armchip .armpick{display:flex;flex-direction:column;align-items:flex-start;gap:1px;
+ cursor:pointer;padding:6px 11px}
+.armchip .armnameline{white-space:nowrap}   /* date + time stay on one line */
+.armchip .armdate{font-size:13px;font-weight:500;color:var(--ink2)}
+.armchip .armname{font-size:13px;font-weight:700;color:var(--ink)}
+.armchip .armsub{font-size:10.5px;color:var(--muted)}
+/* Per-chip remove: a small round × in the top-right corner, revealed on hover; drops the
+   arm from the catalog and the shareable slug. */
+.armchip .armx{position:absolute;top:3px;right:3px;width:14px;height:14px;border-radius:50%;
+ display:flex;align-items:center;justify-content:center;font-size:11px;line-height:1;
+ cursor:pointer;color:var(--muted);background:var(--surface);opacity:0;transition:opacity .1s}
+.armchip:hover .armx{opacity:0.85}
+.armchip .armx:hover{opacity:1;background:var(--bad);color:#fff}
+/* Chosen arms are shaded in their comparison color (A=ctl, B=exp); once both are
+   chosen the rest dim, so it's visually clear one must be un-picked first. */
+.armchip.selA{background:color-mix(in srgb,var(--ctl-p99) 22%,var(--page));box-shadow:inset 0 0 0 1px var(--ctl-p99)}
+.armchip.selB{background:color-mix(in srgb,var(--lh-p99) 22%,var(--page));box-shadow:inset 0 0 0 1px var(--lh-p99)}
+.armchip.dim{opacity:0.3}
+.armchip.dim .armpick{cursor:default}
+/* Dim the arm hidden by the current view (double-click cycles A / B / both). */
+body.arm-a .armchip.selB,body.arm-b .armchip.selA{opacity:0.4}
+/* [+] compare tile: a dashed placeholder that opens the "add runsets" modal (paste link /
+   import JSON / recently viewed). Greyed + non-opening at the catalog cap. */
+.armchip.armadd{border-style:dashed;background:transparent}
+.armchip.armadd:hover{border-color:var(--axis)}
+.armchip.armadd .armaddtoggle{cursor:pointer;align-items:center;justify-content:center}
+.armchip.armadd .armname,.armchip.armadd .armsub{color:var(--ink2)}
+.armchip.armadd.disabled{opacity:0.4}
+.armchip.armadd.disabled .armaddtoggle{cursor:not-allowed}
+/* Share moved here from the (now removed) top control bar; right-aligned in the arm bar. */
+.armbar .sharebtn{margin-left:auto;align-self:center;font:inherit;font-size:13px;font-weight:600;
+ cursor:pointer;border:1px solid var(--border);background:var(--page);color:var(--ink2);
+ border-radius:8px;padding:4px 12px;transition:all .12s}
+.armbar .sharebtn:hover{border-color:var(--axis)}
+.armbar .sharebtn.busy{opacity:0.6;cursor:default}
+.armbar .sharebtn.ok{color:var(--good);border-color:var(--good)}
+.armbar .sharebtn.err{color:var(--bad);border-color:var(--bad)}
+.armempty{color:var(--muted);font-size:13px;margin:24px 2px}
+/* ---- "add runsets to comparison" modal (paste link / import JSON / recently viewed) ---- */
+.rvmodal{position:fixed;inset:0;z-index:100;display:flex;align-items:flex-start;
+ justify-content:center;padding:6vh 16px 16px;overflow:auto;
+ background:color-mix(in srgb,var(--ink) 34%,transparent)}
+.rvpanel{width:min(560px,96vw);background:var(--surface);color:var(--ink);
+ border:1px solid var(--border);border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,0.28);
+ max-height:88vh;display:flex;flex-direction:column;overflow:hidden}
+.rvhead{display:flex;align-items:center;justify-content:space-between;gap:8px;
+ padding:14px 18px;border-bottom:1px solid var(--border);font-size:15px}
+.rvclose{font:inherit;font-size:20px;line-height:1;cursor:pointer;border:none;background:none;
+ color:var(--muted);padding:0 4px;border-radius:6px}
+.rvclose:hover{color:var(--ink)}
+.rvbody{padding:4px 18px 18px;overflow:auto}
+.rvbody h4{margin:16px 0 8px;font-size:11px;font-weight:700;text-transform:uppercase;
+ letter-spacing:0.05em;color:var(--muted)}
+.rvbody h4:first-child{margin-top:6px}
+.rvhr{border:none;border-top:1px solid var(--border);margin:16px 0 0}
+.rvlink{width:100%;box-sizing:border-box;font:inherit;font-size:13px;color:var(--ink);
+ background:var(--page);border:1px solid var(--border);border-radius:8px;padding:7px 10px;outline:none}
+.rvlink:focus{border-color:var(--axis)}
+.rvdrop{border:1px dashed var(--axis);border-radius:8px;padding:14px;text-align:center;
+ font-size:12.5px;color:var(--muted);background:var(--page)}
+.rvdrop code{font-size:12px}
+.rvdrop.over{border-color:var(--good);background:color-mix(in srgb,var(--good) 8%,var(--page))}
+.rvbrowse{font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;color:var(--ink2);
+ background:var(--surface);border:1px solid var(--border);border-radius:7px;padding:3px 10px}
+.rvbrowse:hover{border-color:var(--axis)}
+/* parse preview: Import / Cancel buttons (or a plain error / already-present note) */
+.rvprev{margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px}
+.rvprev:empty{display:none}
+.rvprev.bad{color:var(--bad)}
+.rvconfirm{font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;color:var(--surface);
+ background:var(--ink);border:1px solid var(--ink);border-radius:7px;padding:5px 12px}
+.rvconfirm:hover{opacity:0.88}
+.rvconfirm .rvcount{font-weight:400;opacity:0.78}
+.rvcancel{font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;color:var(--ink2);
+ background:var(--surface);border:1px solid var(--border);border-radius:7px;padding:5px 12px}
+.rvcancel:hover{border-color:var(--axis)}
+/* recently-viewed listing: one card per set (two lines), grouped test -> day */
+.rvlist{max-height:38vh;overflow:auto}
+.rvempty{color:var(--muted);font-size:12.5px;margin:2px 0}
+.rvgroup{margin-bottom:4px}
+.rvtest{font-size:12px;font-weight:700;color:var(--ink);padding:10px 4px 2px;
+ word-break:break-all;line-height:1.35}
+.rvday{font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;
+ color:var(--muted);padding:4px 4px}
+.rvlist .rvhr{margin:6px 0}
+.rvlist .rvhr:last-child{display:none}
+.rvitem{display:flex;align-items:flex-start;gap:9px;padding:7px 10px;border-radius:8px;
+ border:1px solid var(--border);background:var(--page);margin:0 2px 6px}
+.rvitem[data-rvadd]{cursor:pointer}
+.rvitem[data-rvadd]:hover{border-color:var(--axis);background:var(--surface)}
+.rvicon{flex:0 0 auto;width:15px;text-align:center;font-weight:700;font-size:14px;
+ line-height:1.5;color:var(--muted)}
+.rvitem[data-rvadd] .rvicon,.rvitem.rvhad .rvicon{color:var(--good)}
+.rvcard{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1 1 auto}
+.rvl1{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;font-size:12.5px}
+.rvtime{font-weight:700;color:var(--ink)}
+.rvmeta{color:var(--muted);font-size:11px}
+.rvdash{color:var(--muted)}
+.rvver{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+ font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:var(--ink2)}
+.rvl2{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;font-size:11px;color:var(--muted)}
+.rvcommit{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
+/* Merged Restore + Latency into one continuous dashboard surface (was two section cards) so
+   the sticky graph + bars pin across the whole scroll. --dash-graph-h is the compact height
+   the graph shrinks to when pinned; the control bars pin just under it at that offset. */
+.dash{background:var(--surface);border:1px solid var(--border);border-radius:14px;
+ padding:16px 18px 10px;margin:14px 0;--dash-graph-cur:110px;--dash-arm-h:0px}
+.stick{position:sticky}
+/* Zero the .ctrl horizontal padding for the dashboard headers/bar so their titles + controls
+   align with the card's other content (Details h2, op h3s) instead of indenting ~14px more. */
+.dash .ctrl.header,.dash .stick-gctrl{padding-left:0;padding-right:0}
+/* The Restore title is not sticky — it scrolls away and the compact graph pins to the top. */
+.ctrl.header.resthdr{position:static}
+.stick-sentinel{height:0;margin:0;padding:0}
+/* Compact progress graph pins just under the sticky arm bar. Opaque so content doesn't bleed. */
+.stick-graph{top:var(--dash-arm-h);z-index:7;margin:0;background:var(--surface)}
+/* The split ribbon, pinned directly under the compact graph: the global-controls bar is the
+   opaque base (controls right-aligned); the Latency header is a TRANSPARENT overlay at the
+   same offset whose left content (title/metrics/scale) sits over the bar's empty left, with
+   its empty right half clicking through to the controls beneath. Both ride --dash-graph-cur
+   (the graph's current bottom, updated by sticky.ts) so they stay under it as it squishes,
+   rather than hiding behind the still-tall graph and popping back once compact. */
+.stick-gctrl{top:calc(var(--dash-arm-h) + var(--dash-graph-cur));z-index:5;background:var(--surface);
+ border:none;border-radius:0;margin:0 0 12px;padding:6px 2px;box-shadow:0 1px 0 var(--border)}
+/* A fade below the pinned control bar so scrolling content doesn't ram against it (matches the
+   1px line under the compact graph above the bar). */
+.stick-gctrl::after{content:'';position:absolute;left:0;right:0;top:100%;height:14px;
+ pointer-events:none;background:linear-gradient(var(--surface),transparent)}
+.ctrl.header.stick-latency{top:calc(var(--dash-arm-h) + var(--dash-graph-cur));z-index:6;
+ background:transparent;border-radius:0;margin:0 0 12px}
+/* While squishing/pinned, the graph's height is scrubbed inline by sticky.ts. The SVG fills
+   that height (preserveAspectRatio=none squishes it), and the axis text + grid are dropped so
+   the smeared labels don't show — the curve shape + synced cursor line remain as a reference. */
+.stick-graph.stuck{overflow:hidden;box-shadow:0 1px 0 var(--border)}
+.stick-graph.stuck .dlchart,.stick-graph.stuck .dlchart svg{height:100%}
+.stick-graph.stuck .dlchart svg text,.stick-graph.stuck .dlchart svg .grid{display:none}
+/* y1 (left-axis) cursor readout for the compact strip: an HTML chip at the cursor x, kept
+   upright + readable while the SVG's own labels are squished flat. Populated by drawCursor. */
+.dlcap{display:none;position:absolute;top:3px;transform:translateX(-50%);pointer-events:none;
+ z-index:2;white-space:nowrap;font-size:15px;font-weight:700;font-variant-numeric:tabular-nums;
+ padding:1px 6px;border-radius:6px;background:color-mix(in srgb,var(--surface) 82%,transparent)}
+/* Progress Distribution collapse: default collapsed (revealed by the "show graph" link in the
+   progress-distribution table, or by clicking the title once shown). When collapsed the whole
+   title + chart hide; a caret on the title reflects the state when shown. */
+.gtitletxt[data-pdist-toggle]{cursor:pointer;user-select:none}
+.gtitletxt[data-pdist-toggle]::after{content:' \25BE';color:var(--muted);font-weight:600}
+.pdist.collapsed .gtitle,.pdist.collapsed .chart[data-remote]{display:none}
+/* "show graph" / "hide graph" link in the progress-distribution table (text via body.pd-open). */
+.showgraph{font-size:11px;font-weight:600;color:var(--lh-p95);cursor:pointer;text-decoration:none}
+.showgraph:hover{text-decoration:underline}
+.showgraph::after{content:'show graph \2197'}
+body.pd-open .showgraph::after{content:'hide graph \2197'}
+/* Non-sticky rule separating the Restore info section from the Workload Latency section. */
+hr.sec-sep{border:none;border-top:1px solid var(--border);margin:26px 0 2px}
+/* A solo arm renders positionally as ctl (orange). When the survivor of a comparison
+   is the slot-B arm, remap the ctl palette to the exp (blue) one so its color stays
+   stable — the report is otherwise the same single-arm view. */
+body.soloB{--ctl-p50:var(--lh-p50);--ctl-p95:var(--lh-p95);--ctl-p99:var(--lh-p99)}
