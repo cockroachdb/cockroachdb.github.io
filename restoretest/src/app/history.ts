@@ -129,7 +129,11 @@ export function historyModalHTML(groups, presentIds){
           + "</span>"
           + "</div>";
       }).join("");
-      return "<div class=\"rvday\">" + esc(d.dayLabel) + "</div>" + items + "<hr class=\"rvhr\">";
+      return "<div class=\"rvday\"><span>" + esc(d.dayLabel) + "</span>"
+        + "<button class=\"rvdelday\" data-rvdelday=\"" + encodeURIComponent(d.day||"")
+        + "\" data-rvdeltest=\"" + encodeURIComponent(g.test||"")
+        + "\" title=\"remove this day's run sets from history\">×</button></div>"
+        + items + "<hr class=\"rvhr\">";
     }).join("");
     return "<div class=\"rvgroup\"><div class=\"rvtest\">" + esc(g.test || g.testLeaf || "?") + "</div>" + days + "</div>";
   }).join("");
@@ -211,6 +215,17 @@ export async function listCards(){
     db.close();
     return good;
   } catch(e){ return []; }
+}
+
+// Delete the given set ids (card + body) from history. No-op on any failure.
+export async function deleteSets(ids){
+  try{
+    var db = await openDB(); if (!db) return;
+    var tx = db.transaction(["cards", "bodies"], "readwrite");
+    (ids || []).forEach(function(id){ tx.objectStore("cards").delete(id); tx.objectStore("bodies").delete(id); });
+    await txDone(tx);
+    db.close();
+  } catch(e){ /* best-effort */ }
 }
 
 // Raw runs for the given set ids (clicked card + its sibling arms), concatenated. All gets are

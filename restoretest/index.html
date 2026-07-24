@@ -3598,7 +3598,7 @@ function historyModalHTML(groups, presentIds) {
         var attr = have ? "" : ' data-rvadd="' + encodeURIComponent(c.id) + '"';
         return '<div class="rvitem' + (have ? " rvhad" : "") + '"' + attr + '><span class="rvicon">' + (have ? "✓" : "+") + '</span><span class="rvcard"><span class="rvl1"><span class="rvtime">' + esc(hm + arm) + '</span> <span class="rvmeta">· ' + esc(meta.join(" · ")) + "</span></span>" + (l2 ? '<span class="rvl2">' + l2 + "</span>" : "") + "</span></div>";
       }).join("");
-      return '<div class="rvday">' + esc(d.dayLabel) + "</div>" + items + '<hr class="rvhr">';
+      return '<div class="rvday"><span>' + esc(d.dayLabel) + '</span><button class="rvdelday" data-rvdelday="' + encodeURIComponent(d.day || "") + '" data-rvdeltest="' + encodeURIComponent(g.test || "") + `" title="remove this day's run sets from history">×</button></div>` + items + '<hr class="rvhr">';
     }).join("");
     return '<div class="rvgroup"><div class="rvtest">' + esc(g.test || g.testLeaf || "?") + "</div>" + days + "</div>";
   }).join("");
@@ -3717,6 +3717,20 @@ async function listCards() {
     return good;
   } catch (e) {
     return [];
+  }
+}
+async function deleteSets(ids) {
+  try {
+    var db = await openDB();
+    if (!db) return;
+    var tx = db.transaction(["cards", "bodies"], "readwrite");
+    (ids || []).forEach(function(id) {
+      tx.objectStore("cards").delete(id);
+      tx.objectStore("bodies").delete(id);
+    });
+    await txDone(tx);
+    db.close();
+  } catch (e) {
   }
 }
 async function getRunsFor(ids) {
@@ -4102,7 +4116,7 @@ var MAX_SETS = 5;
     var fresh = freshRuns(runs);
     if (!fresh.length) {
       el.className = "rvprev";
-      el.textContent = "already in the catalog.";
+      el.textContent = "already loaded.";
       return;
     }
     STAGED[kind] = fresh;
@@ -4326,7 +4340,6 @@ var MAX_SETS = 5;
     var m = document.querySelector("[data-rvmodal]");
     if (m && m.parentNode) m.parentNode.removeChild(m);
     STAGED = { link: null, file: null };
-    MODAL_CARDS = [];
   }
   function openModal() {
     if (document.querySelector("[data-rvmodal]")) return;
@@ -4469,6 +4482,22 @@ var MAX_SETS = 5;
     if (!row) return;
     e.preventDefault();
     addFromHistory(decodeURIComponent(row.getAttribute("data-rvadd")));
+  });
+  document.addEventListener("click", function(e) {
+    var b = e.target.closest && e.target.closest("[data-rvdelday]");
+    if (!b) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var day = decodeURIComponent(b.getAttribute("data-rvdelday") || "");
+    var test = decodeURIComponent(b.getAttribute("data-rvdeltest") || "");
+    var ids = (MODAL_CARDS || []).filter(function(c) {
+      return (c.day || "") === day && (c.test || "") === test;
+    }).map(function(c) {
+      return c.id;
+    });
+    if (!ids.length) return;
+    console.log("[recent] delete day", test, day, "->", ids.length, "set(s)");
+    deleteSets(ids).then(refreshRecent);
   });
   function renderReport(arms) {
     window.__ARMS__ = arms;
@@ -4828,8 +4857,13 @@ body.arm-a .armchip.selB,body.arm-b .armchip.selA{opacity:0.4}
 .rvgroup{margin-bottom:4px}
 .rvtest{font-size:12px;font-weight:700;color:var(--ink);padding:10px 4px 2px;
  word-break:break-all;line-height:1.35}
-.rvday{font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;
+.rvday{display:flex;align-items:center;justify-content:space-between;gap:6px;
+ font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;
  color:var(--muted);padding:4px 4px}
+.rvdelday{font:inherit;font-size:14px;line-height:1;cursor:pointer;border:none;background:none;
+ color:var(--muted);opacity:0.45;padding:0 5px;border-radius:5px}
+.rvday:hover .rvdelday{opacity:0.8}
+.rvdelday:hover{opacity:1;background:var(--bad);color:#fff}
 .rvlist .rvhr{margin:6px 0}
 .rvlist .rvhr:last-child{display:none}
 .rvitem{display:flex;align-items:flex-start;gap:9px;padding:7px 10px;border-radius:8px;

@@ -265,8 +265,13 @@ body.arm-a .armchip.selB,body.arm-b .armchip.selA{opacity:0.4}
 .rvgroup{margin-bottom:4px}
 .rvtest{font-size:12px;font-weight:700;color:var(--ink);padding:10px 4px 2px;
  word-break:break-all;line-height:1.35}
-.rvday{font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;
+.rvday{display:flex;align-items:center;justify-content:space-between;gap:6px;
+ font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;
  color:var(--muted);padding:4px 4px}
+.rvdelday{font:inherit;font-size:14px;line-height:1;cursor:pointer;border:none;background:none;
+ color:var(--muted);opacity:0.45;padding:0 5px;border-radius:5px}
+.rvday:hover .rvdelday{opacity:0.8}
+.rvdelday:hover{opacity:1;background:var(--bad);color:#fff}
 .rvlist .rvhr{margin:6px 0}
 .rvlist .rvhr:last-child{display:none}
 .rvitem{display:flex;align-items:flex-start;gap:9px;padding:7px 10px;border-radius:8px;

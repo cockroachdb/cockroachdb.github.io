@@ -7,7 +7,7 @@ import { analyze, render_body } from "../core";
 import { runChart, CTRL_DEFAULTS } from "../chart/chart";
 import { esc, fmtDur, fmtSettings } from "../format/format";
 import { runsToSets, catalogToRuns, setIdentity } from "./runsets";
-import { recordSets, listCards, getRunsFor, sortAndGroupCards, historyModalHTML, avgTimeTo100 } from "./history";
+import { recordSets, listCards, getRunsFor, deleteSets, sortAndGroupCards, historyModalHTML, avgTimeTo100 } from "./history";
 import { initSticky } from "../sticky";
 var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disabled (overflow via
                     // a sibling-arm add from the modal is still allowed — the cap gates opening)
@@ -334,7 +334,7 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
    STAGED[kind]=null;
    if(!runs || !runs.length){ el.className='rvprev bad'; el.textContent='couldn’t read that.'; return; }
    var fresh=freshRuns(runs);
-   if(!fresh.length){ el.className='rvprev'; el.textContent='already in the catalog.'; return; }
+   if(!fresh.length){ el.className='rvprev'; el.textContent='already loaded.'; return; }
    STAGED[kind]=fresh;
    var sets=runsToSets(fresh).length;
    el.className='rvprev ok';
@@ -479,7 +479,9 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
  }
  function closeModal(){
    var m=document.querySelector('[data-rvmodal]'); if(m&&m.parentNode) m.parentNode.removeChild(m);
-   STAGED={link:null,file:null}; MODAL_CARDS=[];
+   STAGED={link:null,file:null};   // keep MODAL_CARDS warm across open/close (primed at load,
+                                   // refreshed after imports/deletes) so a drop-opened modal —
+                                   // which renders from the cache with NO IndexedDB — has the list.
  }
  // Open the modal SYNCHRONOUSLY, rendering the recently-viewed list from the in-memory cache
  // (MODAL_CARDS — primed once at page load, refreshed after each import). No IndexedDB here: that
@@ -613,6 +615,18 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
    var row=e.target.closest&&e.target.closest('[data-rvadd]'); if(!row) return;
    e.preventDefault();
    addFromHistory(decodeURIComponent(row.getAttribute('data-rvadd')));
+ });
+ // Day-header [×] -> delete every history set from that (test, day) group, then refresh the list.
+ document.addEventListener('click',function(e:any){
+   var b=e.target.closest&&e.target.closest('[data-rvdelday]'); if(!b) return;
+   e.preventDefault(); e.stopPropagation();
+   var day=decodeURIComponent(b.getAttribute('data-rvdelday')||'');
+   var test=decodeURIComponent(b.getAttribute('data-rvdeltest')||'');
+   var ids=(MODAL_CARDS||[]).filter(function(c){ return (c.day||'')===day && (c.test||'')===test; })
+     .map(function(c){ return c.id; });
+   if(!ids.length) return;
+   console.log('[recent] delete day', test, day, '->', ids.length, 'set(s)');
+   deleteSets(ids).then(refreshRecent);
  });
 
  function renderReport(arms){
