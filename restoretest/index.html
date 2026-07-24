@@ -3664,6 +3664,7 @@ async function recordSets(sets) {
     (sets || []).forEach(function(set) {
       var id = setIdentity(set);
       if (!id) return;
+      if (!(set && (set.test || set.ts))) return;
       var card = cardFromSet(set);
       card.lastViewed = now;
       cardStore.put(card);
@@ -3696,10 +3697,24 @@ async function listCards() {
   try {
     var db = await openDB();
     if (!db) return [];
-    var tx = db.transaction("cards", "readonly");
-    var cards = await reqP(tx.objectStore("cards").getAll());
+    var cards = await reqP(db.transaction("cards", "readonly").objectStore("cards").getAll()) || [];
+    var junk = cards.filter(function(c) {
+      return !(c && (c.test || c.ts));
+    });
+    var good = cards.filter(function(c) {
+      return c && (c.test || c.ts);
+    });
+    if (junk.length) {
+      var tx2 = db.transaction(["cards", "bodies"], "readwrite");
+      junk.forEach(function(c) {
+        tx2.objectStore("cards").delete(c.id);
+        tx2.objectStore("bodies").delete(c.id);
+      });
+      await txDone(tx2);
+      console.log("[import] pruned " + junk.length + " junk history card(s)");
+    }
     db.close();
-    return cards || [];
+    return good;
   } catch (e) {
     return [];
   }
@@ -4072,7 +4087,7 @@ var MAX_SETS = 5;
       if (SEL[0] == null) SEL[0] = bi;
       else if (SEL[1] == null) SEL[1] = bi;
     }
-    recordSets(CATALOG);
+    recordSets(CATALOG).then(refreshRecent);
     return true;
   }
   function showPreview(kind, runs) {
@@ -4115,26 +4130,176 @@ var MAX_SETS = 5;
     var runs = await runsFromPayload(pasted);
     showPreview("link", runs);
   }
+  var READ_CONC = 8;
+  function fileprev() {
+    return document.querySelector('[data-rvprev="file"]');
+  }
+  function setImporting(text) {
+    var el = fileprev();
+    if (el) {
+      el.className = "rvprev busy";
+      el.innerHTML = '<span class="rvspin"></span> ' + esc(text);
+    }
+  }
+  function setImportMsg(text, bad) {
+    var el = fileprev();
+    if (el) {
+      el.className = "rvprev bad";
+      el.textContent = text;
+    }
+    STAGED.file = null;
+  }
   async function readFiles(files) {
+    files = files || [];
+    var arr = [];
+    for (var i = 0; i < files.length; i++) {
+      var f = files[i];
+      if ((f.name || "").toLowerCase() === "summary_report.json") arr.push(f);
+    }
+    console.log("[import] readFiles: " + files.length + " file(s), " + arr.length + " named summary_report.json");
+    if (!arr.length) {
+      setImportMsg("No summary_report.json found in that drop.");
+      return;
+    }
     try {
-      var arr = [];
-      for (var i = 0; i < files.length; i++) {
-        var f = files[i];
-        if (/\.json$/i.test(f.name) || /json/.test(f.type || "")) arr.push(f);
-      }
-      if (!arr.length) {
-        showPreview("file", []);
-        return;
-      }
-      var objs = await Promise.all(arr.map(readJSON));
+      setImporting("Reading " + arr.length + " report" + (arr.length > 1 ? "s" : "") + "…");
       var runs = [];
-      objs.forEach(function(o) {
-        runs = runs.concat(runsFromJson(o));
-      });
+      for (var j = 0; j < arr.length; j += READ_CONC) {
+        var objs = await Promise.all(arr.slice(j, j + READ_CONC).map(readJSON));
+        objs.forEach(function(o) {
+          runs = runs.concat(runsFromJson(o));
+        });
+      }
+      console.log("[import] parsed " + runs.length + " run(s) from " + arr.length + " file(s)");
       showPreview("file", runs);
     } catch (e) {
-      showPreview("file", []);
+      console.warn("[import] readFiles error", e);
+      setImportMsg("Couldn’t read those files.");
     }
+  }
+  function grabHandles(dt) {
+    var items = dt.items;
+    if (!(items && items.length && items[0] && items[0].getAsFileSystemHandle)) return null;
+    var ps = [];
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (it && it.getAsFileSystemHandle) ps.push(it.getAsFileSystemHandle());
+    }
+    return ps;
+  }
+  function grabRoots(dt) {
+    var items = dt.items;
+    if (!(items && items.length && items[0] && items[0].webkitGetAsEntry)) return null;
+    var roots = [];
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      var en = it && it.webkitGetAsEntry && it.webkitGetAsEntry();
+      if (en) roots.push(en);
+    }
+    return roots;
+  }
+  async function collectReportsFromHandles(handleProms) {
+    var found = [], dirs = 0, files = 0, stopped = false;
+    var handles = await Promise.all(handleProms);
+    async function walk(h) {
+      if (stopped || !h) return;
+      if (h.kind === "file") {
+        files++;
+        if ((h.name || "").toLowerCase() === "summary_report.json") {
+          try {
+            var f = await h.getFile();
+            if (f) found.push(f);
+          } catch (e) {
+            console.warn("[import] getFile failed for", h.name, e);
+          }
+        }
+        if ((files + dirs & 2047) === 0) {
+          setImporting("Scanning… " + files + " files, " + found.length + " report(s) found");
+          if (files + dirs > SCAN_CAP) {
+            stopped = true;
+            console.warn("[import] scan cap " + SCAN_CAP + " hit — stopping");
+          }
+        }
+        return;
+      }
+      if (h.kind === "directory") {
+        dirs++;
+        for await (const child of h.values()) {
+          if (stopped) break;
+          await walk(child);
+        }
+      }
+    }
+    for (var i = 0; i < handles.length; i++) {
+      if (stopped) break;
+      await walk(handles[i]);
+    }
+    console.log("[import] scan complete (FS handles): dirs=" + dirs + " files=" + files + " reports=" + found.length);
+    return found;
+  }
+  var SCAN_CAP = 3e5;
+  async function collectReports(roots) {
+    var found = [], dirs = 0, files = 0, stopped = false;
+    function readEntriesOnce(reader) {
+      return new Promise(function(res) {
+        reader.readEntries(
+          function(x) {
+            res(x);
+          },
+          function(e) {
+            console.warn("[import] readEntries error:", e && (e.name || e.message || String(e)));
+            res([]);
+          }
+        );
+      });
+    }
+    async function readAll(reader) {
+      var out = [];
+      for (; ; ) {
+        var ents = await readEntriesOnce(reader);
+        if (!ents || !ents.length) break;
+        for (var i2 = 0; i2 < ents.length; i2++) out.push(ents[i2]);
+      }
+      return out;
+    }
+    async function walk(entry) {
+      if (stopped || !entry) return;
+      if (entry.isFile) {
+        files++;
+        if ((entry.name || "").toLowerCase() === "summary_report.json") {
+          var f = await new Promise(function(res) {
+            entry.file(function(x) {
+              res(x);
+            }, function() {
+              res(null);
+            });
+          });
+          if (f) found.push(f);
+        }
+        if ((files + dirs & 2047) === 0) {
+          setImporting("Scanning… " + files + " files, " + found.length + " report(s) found");
+          if (files + dirs > SCAN_CAP) {
+            stopped = true;
+            console.warn("[import] scan cap " + SCAN_CAP + " hit — stopping");
+          }
+        }
+        return;
+      }
+      if (entry.isDirectory) {
+        dirs++;
+        var kids = await readAll(entry.createReader());
+        for (var i2 = 0; i2 < kids.length; i2++) {
+          if (stopped) break;
+          await walk(kids[i2]);
+        }
+      }
+    }
+    for (var i = 0; i < roots.length; i++) {
+      if (stopped) break;
+      await walk(roots[i]);
+    }
+    console.log("[import] scan complete: dirs=" + dirs + " files=" + files + " reports=" + found.length);
+    return found;
   }
   async function addFromHistory(id) {
     var clicked = null;
@@ -4149,9 +4314,12 @@ var MAX_SETS = 5;
     });
     if (ids.indexOf(id) < 0) ids.push(id);
     var runs = await getRunsFor(ids);
+    console.log("[recent] add", ids.length, "set(s) ->", runs.length, "run(s)");
     if (addRuns(runs)) {
       closeModal();
       renderView();
+    } else {
+      closeModal();
     }
   }
   function closeModal() {
@@ -4160,15 +4328,25 @@ var MAX_SETS = 5;
     STAGED = { link: null, file: null };
     MODAL_CARDS = [];
   }
-  async function openModal() {
+  function openModal() {
     if (document.querySelector("[data-rvmodal]")) return;
     var present = new Set((CATALOG || []).map(setIdentity));
-    MODAL_CARDS = await listCards();
-    var groups = sortAndGroupCards(MODAL_CARDS);
-    var html = '<div class="rvmodal" data-rvmodal><div class="rvpanel" role="dialog" aria-label="add runsets to comparison"><div class="rvhead"><b>add runsets to comparison</b><button class="rvclose" data-rvclose aria-label="close">×</button></div><div class="rvbody"><h4>Import Link</h4><input class="rvlink" data-rvlink type="text" placeholder="link to another report"><div class="rvprev" data-rvprev="link"></div><hr class="rvhr"><h4>Import Summary Report JSON</h4><div class="rvdrop" data-rvdrop><span>Drop a <code>summary_report.json</code> (or multiple) to import, or </span><button class="rvbrowse" data-rvbrowse>browse…</button><input class="rvfileinput" data-rvfile type="file" accept=".json,application/json" multiple hidden></div><div class="rvprev" data-rvprev="file"></div><hr class="rvhr"><h4>Recently Viewed</h4><div class="rvlist" data-rvlist>' + historyModalHTML(groups, present) + "</div></div></div></div>";
+    var html = '<div class="rvmodal" data-rvmodal><div class="rvpanel" role="dialog" aria-label="add runsets to comparison"><div class="rvhead"><b>add runsets to comparison</b><button class="rvclose" data-rvclose aria-label="close">×</button></div><div class="rvbody"><h4>Import Link</h4><input class="rvlink" data-rvlink type="text" placeholder="link to another report"><div class="rvprev" data-rvprev="link"></div><hr class="rvhr"><h4>Import Summary Report JSON</h4><div class="rvdrop" data-rvdrop><span>Drop a <code>summary_report.json</code>, several, or a whole artifacts folder to import, or </span><button class="rvbrowse" data-rvbrowse>browse…</button><input class="rvfileinput" data-rvfile type="file" accept=".json,application/json" multiple hidden></div><div class="rvprev" data-rvprev="file"></div><hr class="rvhr"><h4>Recently Viewed</h4><div class="rvlist" data-rvlist>' + historyModalHTML(sortAndGroupCards(MODAL_CARDS || []), present) + "</div></div></div></div>";
     document.body.insertAdjacentHTML("beforeend", html);
     var box = document.querySelector("[data-rvlink]");
     if (box) box.focus();
+  }
+  async function refreshRecent() {
+    try {
+      MODAL_CARDS = await listCards();
+    } catch (e) {
+      return;
+    }
+    var el = document.querySelector("[data-rvlist]");
+    if (el) {
+      var present = new Set((CATALOG || []).map(setIdentity));
+      el.innerHTML = historyModalHTML(sortAndGroupCards(MODAL_CARDS || []), present);
+    }
   }
   document.addEventListener("click", function(e) {
     var op = e.target.closest && e.target.closest("[data-modal-open]");
@@ -4211,24 +4389,50 @@ var MAX_SETS = 5;
     if (!inp) return;
     readFiles(inp.files);
   });
+  function hasFiles(e) {
+    var t = e.dataTransfer && e.dataTransfer.types;
+    return !!(t && (t.indexOf ? t.indexOf("Files") >= 0 : t.contains && t.contains("Files")));
+  }
   document.addEventListener("dragover", function(e) {
-    var d = e.target.closest && e.target.closest("[data-rvdrop]");
-    if (!d) return;
+    if (!hasFiles(e)) return;
     e.preventDefault();
-    d.classList.add("over");
+    var d = e.target.closest && e.target.closest("[data-rvdrop]");
+    if (d) d.classList.add("over");
   });
   document.addEventListener("dragleave", function(e) {
     var d = e.target.closest && e.target.closest("[data-rvdrop]");
-    if (!d) return;
-    d.classList.remove("over");
+    if (d) d.classList.remove("over");
   });
+  var IMPORTING = false;
   document.addEventListener("drop", function(e) {
-    var d = e.target.closest && e.target.closest("[data-rvdrop]");
-    if (!d) return;
+    if (!hasFiles(e)) return;
     e.preventDefault();
-    d.classList.remove("over");
-    var files = e.dataTransfer && e.dataTransfer.files;
-    if (files && files.length) readFiles(files);
+    var d = e.target.closest && e.target.closest("[data-rvdrop]");
+    if (d) d.classList.remove("over");
+    if (IMPORTING) {
+      console.log("[import] drop ignored — an import is already in progress");
+      return;
+    }
+    var dt = e.dataTransfer;
+    var handleProms = grabHandles(dt);
+    var roots = handleProms ? null : grabRoots(dt);
+    var dirRoots = roots ? roots.filter(function(r) {
+      return r && r.isDirectory;
+    }) : [];
+    var flat = handleProms || dirRoots.length ? null : Array.prototype.slice.call(dt.files || []);
+    console.log("[import] drop: handles=" + (handleProms ? handleProms.length : "n/a") + " roots=" + (roots ? roots.length : "n/a") + " dirs=" + dirRoots.length + " flat=" + (flat ? flat.length : "n/a"));
+    IMPORTING = true;
+    openModal();
+    setImporting("Reading dropped files…");
+    var filesP = handleProms ? collectReportsFromHandles(handleProms) : dirRoots.length ? collectReports(roots) : Promise.resolve(flat);
+    filesP.then(function(files) {
+      return readFiles(files);
+    }).catch(function(err) {
+      console.warn("[import] drop failed", err);
+      setImportMsg("Couldn’t read the drop — see console.");
+    }).then(function() {
+      IMPORTING = false;
+    });
   });
   document.addEventListener("click", function(e) {
     var c = e.target.closest && e.target.closest("[data-rvconfirm]");
@@ -4277,7 +4481,12 @@ var MAX_SETS = 5;
   }
   function readJSON(file) {
     return file.text().then(function(txt) {
-      return JSON.parse(txt);
+      try {
+        return JSON.parse(txt);
+      } catch (e) {
+        console.warn("[import] bad JSON in", file && file.name, e && e.message);
+        return null;
+      }
     });
   }
   function renderEmpty() {
@@ -4297,6 +4506,7 @@ var MAX_SETS = 5;
     document.body.innerHTML = "<div class='picker'><h1>online restore perf breakdown</h1><p>" + esc(msg) + "</p></div>";
   }
   async function resolveAndRender() {
+    refreshRecent();
     var raw = null;
     if (window.__ARMS__) raw = window.__ARMS__;
     else if (location.hash && location.hash.length > 1) {
@@ -4335,7 +4545,7 @@ var MAX_SETS = 5;
       if (ctrl && typeof ctrl === "object") {
         CTRL = ctrl;
       }
-      recordSets(CATALOG);
+      recordSets(CATALOG).then(refreshRecent);
       renderView();
       return;
     }
@@ -4601,6 +4811,10 @@ body.arm-a .armchip.selB,body.arm-b .armchip.selA{opacity:0.4}
 .rvprev{margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px}
 .rvprev:empty{display:none}
 .rvprev.bad{color:var(--bad)}
+.rvprev.busy{color:var(--muted)}
+.rvspin{display:inline-block;width:11px;height:11px;border:2px solid var(--border);
+ border-top-color:var(--axis);border-radius:50%;vertical-align:-1px;animation:rvspin .7s linear infinite}
+@keyframes rvspin{to{transform:rotate(360deg)}}
 .rvconfirm{font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;color:var(--surface);
  background:var(--ink);border:1px solid var(--ink);border-radius:7px;padding:5px 12px}
 .rvconfirm:hover{opacity:0.88}

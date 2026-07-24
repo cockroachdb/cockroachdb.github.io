@@ -248,6 +248,10 @@ body.arm-a .armchip.selB,body.arm-b .armchip.selA{opacity:0.4}
 .rvprev{margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px}
 .rvprev:empty{display:none}
 .rvprev.bad{color:var(--bad)}
+.rvprev.busy{color:var(--muted)}
+.rvspin{display:inline-block;width:11px;height:11px;border:2px solid var(--border);
+ border-top-color:var(--axis);border-radius:50%;vertical-align:-1px;animation:rvspin .7s linear infinite}
+@keyframes rvspin{to{transform:rotate(360deg)}}
 .rvconfirm{font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;color:var(--surface);
  background:var(--ink);border:1px solid var(--ink);border-radius:7px;padding:5px 12px}
 .rvconfirm:hover{opacity:0.88}

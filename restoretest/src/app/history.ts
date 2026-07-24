@@ -173,6 +173,7 @@ export async function recordSets(sets){
     var cardStore = tx.objectStore("cards"), bodyStore = tx.objectStore("bodies");
     (sets || []).forEach(function(set){
       var id = setIdentity(set); if (!id) return;
+      if (!(set && (set.test || set.ts))) return;   // skip metadata-less junk (renders as "? Nx")
       var card: any = cardFromSet(set); card.lastViewed = now;
       cardStore.put(card);
       bodyStore.put({ id: id, runs: (set && set.runs) || [] });
@@ -193,14 +194,22 @@ async function evictOld(db){
   await txDone(tx2);
 }
 
-// The light cards for the modal listing (never loads run bodies). [] on any failure.
+// The light cards for the modal listing (never loads run bodies). [] on any failure. Also prunes
+// any metadata-less junk cards (no test AND no ts — they render as "? Nx") left by older builds.
 export async function listCards(){
   try{
     var db = await openDB(); if (!db) return [];
-    var tx = db.transaction("cards", "readonly");
-    var cards = await reqP(tx.objectStore("cards").getAll());
+    var cards = await reqP(db.transaction("cards", "readonly").objectStore("cards").getAll()) || [];
+    var junk = cards.filter(function(c){ return !(c && (c.test || c.ts)); });
+    var good = cards.filter(function(c){ return c && (c.test || c.ts); });
+    if (junk.length){
+      var tx2 = db.transaction(["cards", "bodies"], "readwrite");
+      junk.forEach(function(c){ tx2.objectStore("cards").delete(c.id); tx2.objectStore("bodies").delete(c.id); });
+      await txDone(tx2);
+      console.log("[import] pruned " + junk.length + " junk history card(s)");
+    }
     db.close();
-    return cards || [];
+    return good;
   } catch(e){ return []; }
 }
 

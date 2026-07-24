@@ -324,7 +324,7 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
    if(before===0){ SEL = CATALOG.length>=2?[0,1]:[0,null]; }
    else if(CATALOG.length>before){ var bi=before;
      if(SEL[0]==null) SEL[0]=bi; else if(SEL[1]==null) SEL[1]=bi; }
-   recordSets(CATALOG);   // remember the newly-added sets
+   recordSets(CATALOG).then(refreshRecent);   // remember the newly-added sets, refresh the cache
    return true;
  }
  // Render the parse result for a section: an error, an "already present" note, or the
@@ -351,15 +351,118 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
    var runs=await runsFromPayload(pasted);
    showPreview('link', runs);
  }
+ // Read imported reports into runs. Only files literally named summary_report.json are read —
+ // that's the generator's fixed output name, so this never touches the huge non-report JSON in an
+ // artifacts tree (pprof/heap/debug dumps), which is what OOM'd the tab. Bounded concurrency keeps
+ // even a large run count from spiking memory all at once.
+ var READ_CONC=8;
+ // File preview helpers: a spinner (busy), a plain/error message, and the file preview element.
+ function fileprev(){ return document.querySelector('[data-rvprev="file"]') as any; }
+ function setImporting(text){ var el=fileprev(); if(el){ el.className='rvprev busy'; el.innerHTML='<span class="rvspin"></span> '+esc(text); } }
+ function setImportMsg(text, bad){ var el=fileprev(); if(el){ el.className='rvprev'+(bad?' bad':''); el.textContent=text; } STAGED.file=null; }
  async function readFiles(files){
+   files = files || [];
+   var arr=[]; for(var i=0;i<files.length;i++){ var f=files[i];
+     if((f.name||'').toLowerCase()==='summary_report.json') arr.push(f); }
+   console.log('[import] readFiles: '+files.length+' file(s), '+arr.length+' named summary_report.json');
+   if(!arr.length){ setImportMsg('No summary_report.json found in that drop.', true); return; }
    try{
-     var arr=[]; for(var i=0;i<files.length;i++){ var f=files[i];
-       if(/\.json$/i.test(f.name)||/json/.test(f.type||'')) arr.push(f); }
-     if(!arr.length){ showPreview('file', []); return; }
-     var objs=await Promise.all(arr.map(readJSON));
-     var runs=[]; objs.forEach(function(o){ runs=runs.concat(runsFromJson(o)); });
+     setImporting('Reading '+arr.length+' report'+(arr.length>1?'s':'')+'…');
+     var runs=[];
+     for(var j=0;j<arr.length;j+=READ_CONC){
+       var objs=await Promise.all(arr.slice(j,j+READ_CONC).map(readJSON));
+       objs.forEach(function(o){ runs=runs.concat(runsFromJson(o)); });
+     }
+     console.log('[import] parsed '+runs.length+' run(s) from '+arr.length+' file(s)');
      showPreview('file', runs);
-   }catch(e){ showPreview('file', []); }
+   }catch(e){ console.warn('[import] readFiles error', e); setImportMsg('Couldn’t read those files.', true); }
+ }
+ // Grab the drop's File System Access handles SYNCHRONOUSLY during the event (getAsFileSystemHandle
+ // must be called now). Unlike webkitGetAsEntry's entries — which Chrome tears down when the drop
+ // event ends, breaking any async subdirectory read — these handles STAY VALID afterward, so we
+ // can traverse folders reliably post-event. Returns an array of Promise<FileSystemHandle>, or
+ // null when the API isn't available (older/file:// contexts) so the caller falls back.
+ function grabHandles(dt){
+   var items=dt.items;
+   if(!(items && items.length && items[0] && items[0].getAsFileSystemHandle)) return null;
+   var ps=[];
+   for(var i=0;i<items.length;i++){ var it=items[i]; if(it && it.getAsFileSystemHandle) ps.push(it.getAsFileSystemHandle()); }
+   return ps;
+ }
+ // Fallback: grab the drop's entries (webkitGetAsEntry) synchronously. Only valid during the event
+ // and flaky for async subdir reads — used only when the handle API is absent.
+ function grabRoots(dt){
+   var items=dt.items;
+   if(!(items && items.length && items[0] && items[0].webkitGetAsEntry)) return null;
+   var roots=[];
+   for(var i=0;i<items.length;i++){ var it=items[i]; var en=it&&it.webkitGetAsEntry&&it.webkitGetAsEntry(); if(en) roots.push(en); }
+   return roots;
+ }
+ // Recursively collect summary_report.json File objects from dropped File System Access handles.
+ // handle.values() async iteration stays valid after the drop event, so this is the reliable path.
+ async function collectReportsFromHandles(handleProms){
+   var found=[], dirs=0, files=0, stopped=false;
+   var handles=await Promise.all(handleProms);
+   async function walk(h){
+     if(stopped || !h) return;
+     if(h.kind==='file'){
+       files++;
+       if((h.name||'').toLowerCase()==='summary_report.json'){
+         try{ var f=await h.getFile(); if(f) found.push(f); }catch(e){ console.warn('[import] getFile failed for', h.name, e); }
+       }
+       if(((files+dirs)&2047)===0){ setImporting('Scanning… '+files+' files, '+found.length+' report(s) found');
+         if(files+dirs>SCAN_CAP){ stopped=true; console.warn('[import] scan cap '+SCAN_CAP+' hit — stopping'); } }
+       return;
+     }
+     if(h.kind==='directory'){
+       dirs++;
+       for await (const child of h.values()){ if(stopped) break; await walk(child); }
+     }
+   }
+   for(var i=0;i<handles.length;i++){ if(stopped) break; await walk(handles[i]); }
+   console.log('[import] scan complete (FS handles): dirs='+dirs+' files='+files+' reports='+found.length);
+   return found;
+ }
+ // Recursively collect ONLY summary_report.json files from dropped folders, walking SEQUENTIALLY
+ // (await each child) so we never fan out a promise/File-handle explosion across a huge artifacts
+ // tree — that unbounded parallel recursion was the folder-drop hang. Filters during the walk
+ // (non-report handles are never kept), reports progress, and hard-stops at SCAN_CAP entries.
+ var SCAN_CAP=300000;
+ async function collectReports(roots){
+   var found=[], dirs=0, files=0, stopped=false;
+   function readEntriesOnce(reader){
+     return new Promise(function(res){ reader.readEntries(function(x){ res(x); },
+       function(e){ console.warn('[import] readEntries error:', e && (e.name||e.message||String(e))); res([]); }); });
+   }
+   async function readAll(reader){
+     var out=[];
+     for(;;){ var ents:any=await readEntriesOnce(reader); if(!ents || !ents.length) break;
+       for(var i=0;i<ents.length;i++) out.push(ents[i]); }
+     return out;
+   }
+   async function walk(entry){
+     if(stopped || !entry) return;
+     if(entry.isFile){
+       files++;
+       if((entry.name||'').toLowerCase()==='summary_report.json'){
+         var f=await new Promise(function(res){ entry.file(function(x){res(x);}, function(){res(null);}); });
+         if(f) found.push(f);
+       }
+       if(((files+dirs)&2047)===0){
+         setImporting('Scanning… '+files+' files, '+found.length+' report(s) found');
+         if(files+dirs>SCAN_CAP){ stopped=true; console.warn('[import] scan cap '+SCAN_CAP+' hit — stopping'); }
+       }
+       return;
+     }
+     if(entry.isDirectory){
+       dirs++;
+       var kids=await readAll(entry.createReader());
+       for(var i=0;i<kids.length;i++){ if(stopped) break; await walk(kids[i]); }
+     }
+   }
+   for(var i=0;i<roots.length;i++){ if(stopped) break; await walk(roots[i]); }
+   console.log('[import] scan complete: dirs='+dirs+' files='+files+' reports='+found.length);
+   return found;
  }
  // Add a recently-viewed set AND its sibling arms (same test+timestamp), then close.
  async function addFromHistory(id){
@@ -370,17 +473,21 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
      .map(function(c){ return c.id; });
    if(ids.indexOf(id)<0) ids.push(id);
    var runs=await getRunsFor(ids);
+   console.log('[recent] add', ids.length, 'set(s) ->', runs.length, 'run(s)');
    if(addRuns(runs)){ closeModal(); renderView(); }
+   else { closeModal(); }   // nothing new (already in the catalog, or no stored runs) — just close
  }
  function closeModal(){
    var m=document.querySelector('[data-rvmodal]'); if(m&&m.parentNode) m.parentNode.removeChild(m);
    STAGED={link:null,file:null}; MODAL_CARDS=[];
  }
- async function openModal(){
+ // Open the modal SYNCHRONOUSLY, rendering the recently-viewed list from the in-memory cache
+ // (MODAL_CARDS — primed once at page load, refreshed after each import). No IndexedDB here: that
+ // was the folder-drop killer — listCards() running concurrently with the entries-API walk
+ // released the drag data store and made readEntries throw EncodingError.
+ function openModal(){
    if(document.querySelector('[data-rvmodal]')) return;   // already open
    var present=new Set((CATALOG||[]).map(setIdentity));
-   MODAL_CARDS=await listCards();
-   var groups=sortAndGroupCards(MODAL_CARDS);
    var html=''
     +'<div class="rvmodal" data-rvmodal>'
     + '<div class="rvpanel" role="dialog" aria-label="add runsets to comparison">'
@@ -392,16 +499,24 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
     +   '<div class="rvprev" data-rvprev="link"></div>'
     +   '<hr class="rvhr">'
     +   '<h4>Import Summary Report JSON</h4>'
-    +   '<div class="rvdrop" data-rvdrop><span>Drop a <code>summary_report.json</code> (or multiple) to import, or </span>'
+    +   '<div class="rvdrop" data-rvdrop><span>Drop a <code>summary_report.json</code>, several, or a whole artifacts folder to import, or </span>'
     +    '<button class="rvbrowse" data-rvbrowse>browse…</button>'
     +    '<input class="rvfileinput" data-rvfile type="file" accept=".json,application/json" multiple hidden></div>'
     +   '<div class="rvprev" data-rvprev="file"></div>'
     +   '<hr class="rvhr">'
     +   '<h4>Recently Viewed</h4>'
-    +   '<div class="rvlist" data-rvlist>'+historyModalHTML(groups, present)+'</div>'
+    +   '<div class="rvlist" data-rvlist>'+historyModalHTML(sortAndGroupCards(MODAL_CARDS||[]), present)+'</div>'
     +  '</div></div></div>';
    document.body.insertAdjacentHTML('beforeend', html);
    var box=document.querySelector('[data-rvlink]') as any; if(box) box.focus();
+ }
+ // Refresh the recently-viewed cache from IndexedDB (best-effort), and re-render an open modal's
+ // list if present. Called at page load and after imports — NEVER during a folder-drop walk.
+ async function refreshRecent(){
+   try{ MODAL_CARDS=await listCards(); }catch(e){ return; }
+   var el=document.querySelector('[data-rvlist]') as any;
+   if(el){ var present=new Set((CATALOG||[]).map(setIdentity));
+     el.innerHTML=historyModalHTML(sortAndGroupCards(MODAL_CARDS||[]), present); }
  }
 
  // Open the modal from the [+] tile (ignored while capped/disabled).
@@ -436,18 +551,46 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
    var inp=e.target.closest&&e.target.closest('[data-rvfile]'); if(!inp) return;
    readFiles(inp.files);
  });
+ // Page-wide file drop: dropping a summary_report.json ANYWHERE opens the modal (ignoring the
+ // add-tile cap) and runs it through the Import JSON preview, exactly as if it were dropped in
+ // that section. dragover must preventDefault for the drop to fire; the .rvdrop zone still lights
+ // up while hovered. Guard on a file drag so ordinary (text/internal) drags are untouched.
+ function hasFiles(e){ var t=e.dataTransfer&&e.dataTransfer.types;
+   return !!(t && (t.indexOf ? t.indexOf('Files')>=0 : (t.contains && t.contains('Files')))); }
  document.addEventListener('dragover',function(e:any){
-   var d=e.target.closest&&e.target.closest('[data-rvdrop]'); if(!d) return;
-   e.preventDefault(); d.classList.add('over');
+   if(!hasFiles(e)) return;
+   e.preventDefault();
+   var d=e.target.closest&&e.target.closest('[data-rvdrop]'); if(d) d.classList.add('over');
  });
  document.addEventListener('dragleave',function(e:any){
-   var d=e.target.closest&&e.target.closest('[data-rvdrop]'); if(!d) return;
-   d.classList.remove('over');
+   var d=e.target.closest&&e.target.closest('[data-rvdrop]'); if(d) d.classList.remove('over');
  });
+ var IMPORTING=false;
  document.addEventListener('drop',function(e:any){
-   var d=e.target.closest&&e.target.closest('[data-rvdrop]'); if(!d) return;
-   e.preventDefault(); d.classList.remove('over');
-   var files=e.dataTransfer&&e.dataTransfer.files; if(files&&files.length) readFiles(files);
+   if(!hasFiles(e)) return;
+   e.preventDefault();
+   var d=e.target.closest&&e.target.closest('[data-rvdrop]'); if(d) d.classList.remove('over');
+   if(IMPORTING){ console.log('[import] drop ignored — an import is already in progress'); return; }
+   var dt=e.dataTransfer;
+   // Grab handles/entries SYNCHRONOUSLY (must happen during the event). Prefer File System Access
+   // handles (survive the event -> reliable folder traversal); else fall back to the entries API;
+   // else plain dataTransfer.files (single/multi file drops — the same list browse uses).
+   var handleProms=grabHandles(dt);
+   var roots=handleProms ? null : grabRoots(dt);
+   var dirRoots=roots?roots.filter(function(r){return r&&r.isDirectory;}):[];
+   var flat=(handleProms||dirRoots.length) ? null : Array.prototype.slice.call(dt.files||[]);
+   console.log('[import] drop: handles='+(handleProms?handleProms.length:'n/a')+' roots='+(roots?roots.length:'n/a')+' dirs='+dirRoots.length+' flat='+(flat?flat.length:'n/a'));
+   IMPORTING=true;
+   // openModal is fully synchronous (renders from the in-memory cache — no IndexedDB), so the walk
+   // that follows runs with nothing else touching the event loop.
+   openModal();
+   setImporting('Reading dropped files…');
+   var filesP=handleProms ? collectReportsFromHandles(handleProms)
+            : dirRoots.length ? collectReports(roots)
+            : Promise.resolve(flat);
+   filesP.then(function(files){ return readFiles(files); })
+     .catch(function(err){ console.warn('[import] drop failed', err); setImportMsg('Couldn’t read the drop — see console.', true); })
+     .then(function(){ IMPORTING=false; });
  });
  // Confirm an import (link or JSON) -> merge staged runs, close, re-render.
  document.addEventListener('click',function(e:any){
@@ -489,7 +632,8 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
  // "import summary report JSON" drop/browse. Files self-identify via metadata, so imported runs
  // group themselves into sets (by test + timestamp + arm), exactly like the URL/paste path.
  function readJSON(file){
-   return file.text().then(function(txt){return JSON.parse(txt);});
+   return file.text().then(function(txt){ try{ return JSON.parse(txt); }
+     catch(e){ console.warn('[import] bad JSON in', file && file.name, e && e.message); return null; } });
  }
  // Empty state (no injected data / no slug): show just the ribbon (its lone [+] tile) and pop
  // the add-runsets modal open so the first action is right there. Any shared-load error surfaces
@@ -514,6 +658,7 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
      +"<p>"+esc(msg)+"</p></div>";
  }
  async function resolveAndRender(){
+   refreshRecent();   // prime the recently-viewed cache once at load (fills any modal we auto-open)
    // Priority: (1) injected window.__ARMS__ -> (2) URL hash -> (3) file picker. The payload
    // is a bare run array (launcher / roachtest / test), {runs, sel, ctrl} once the report has
    // round-tripped it (sel = the persisted [slotA, slotB] selection), or a {ref, sel, ctrl}
@@ -548,7 +693,7 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
      }
      // Restore persisted control state (p99 off, plot=all, ...) before the chart renders.
      if(ctrl && typeof ctrl==='object'){ CTRL=ctrl; }
-     recordSets(CATALOG);   // remember every set that just loaded (add if not yet stored)
+     recordSets(CATALOG).then(refreshRecent);   // remember every set that just loaded; prime cache
      renderView();
      return;
    }
