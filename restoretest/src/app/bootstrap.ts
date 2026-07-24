@@ -7,7 +7,7 @@ import { analyze, render_body } from "../core";
 import { runChart, CTRL_DEFAULTS } from "../chart/chart";
 import { esc, fmtDur, fmtSettings } from "../format/format";
 import { runsToSets, catalogToRuns, setIdentity } from "./runsets";
-import { recordSets, listCards, getRunsFor, sortAndGroupCards, historyModalHTML } from "./history";
+import { recordSets, listCards, getRunsFor, sortAndGroupCards, historyModalHTML, avgTimeTo100 } from "./history";
 import { initSticky } from "../sticky";
 var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disabled (overflow via
                     // a sibling-arm add from the modal is still allowed — the cap gates opening)
@@ -169,19 +169,9 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
    for(var i=0;i<cands.length;i++){ if(uniq(cands[i])) return cands[i]; }
    return gen('hms',true).map(function(s,i){return s+'#'+(i+1);});  // last resort
  }
- // Average per-run duration (mean over the set's runs of each run's last elapsed sample).
- function armDurAvg(a){
-   if(!a||!a.runs||!a.runs.length) return null;
-   var tot=0,n=0;
-   a.runs.forEach(function(r){
-     var el=r&&r.elapsed;
-     if(!Array.isArray(el)||!el.length) return;
-     var mx=0; for(var i=0;i<el.length;i++){ if(el[i]>mx)mx=el[i]; }
-     if(mx>0){ tot+=mx; n++; }
-   });
-   return n?tot/n:null;
- }
- // fmtDur now lives in ../format/format (shared with the recently-viewed modal).
+ // Average restore-completion time (avg time-to-100% download over the set's runs) is shared
+ // with the recently-viewed card via avgTimeTo100 (imported from ./history); fmtDur lives in
+ // ../format/format.
  // Build the 1-2 arms to render from the slot pair: clone (so the catalog survives),
  // and set each arm's display label to its minimal name for this pair. Settings stay
  // raw — CORE diffs the pair itself. Order is [slotA, slotB] with empty slots dropped,
@@ -205,8 +195,8 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
      var date=armTsFields(a).date, short=names[i], nameHtml;
      if(short.indexOf(date)===0) nameHtml='<b class="armname">'+esc(short)+'</b>';
      else nameHtml='<span class="armdate">'+esc(date)+'</span> <b class="armname">'+esc(short)+'</b>';
-     var sub=[]; var d=armDurAvg(a), cnt=a.runs?a.runs.length:0;
-     sub.push(cnt+'x'+(d!=null?' '+fmtDur(d):''));   // e.g. "5x 6m32s" (count x avg duration)
+     var sub=[]; var d=avgTimeTo100(a.runs), cnt=a.runs?a.runs.length:0;
+     sub.push(cnt+'x'+(d!=null?' '+fmtDur(d):''));   // e.g. "5x 6m32s" (count x avg time-to-100%)
      if(a.sha) sub.push(a.sha.slice(0,8));
      var st=fmtSettings(a.settings);
      if(st) sub.push(st);

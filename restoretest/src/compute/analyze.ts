@@ -159,13 +159,6 @@ function analyze(arms){
   }
 
   // ---- Details table (from arm provenance fields; "—" when absent) ----
-  function diff_settings(mine, other){
-    mine = mine || {};
-    if (!other) { var cp={}; for (var k in mine) cp[k]=mine[k]; return cp; }
-    var out = {};
-    for (var k2 in mine){ if (other[k2] !== mine[k2]) out[k2] = mine[k2]; }
-    return out;
-  }
   // _fmtTs reformats the roachtest invocation stamp baked into the run-dir path
   // ("yymmdd-HHMMSS", e.g. "260722-164502") into the same "YYYY/MM/DD HH:MM:SS" shape the
   // other timestamps use. Returns null on anything that isn't that stamp.
@@ -173,10 +166,13 @@ function analyze(arms){
     var m = /^(\d{2})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/.exec(ts || "");
     return m ? ("20"+m[1]+"/"+m[2]+"/"+m[3]+" "+m[4]+":"+m[5]+":"+m[6]) : null;
   }
-  function _arm_detail(arm, label, hue, otherProv){
-    var settings = diff_settings(arm.settings, otherProv ? otherProv.settings : null);
+  function _arm_detail(arm, label, hue){
+    // Show each arm's own (non-harness) settings, like sha/version — NOT a diff against the
+    // other arm. A setting shared by both arms still appears under both, so it isn't hidden
+    // just because the two happen to match.
+    var mine = arm.settings || {};
     var filtered = {};
-    for (var k in settings){ if (!HARNESS_SETTINGS[k]) filtered[k] = settings[k]; }
+    for (var k in mine){ if (!HARNESS_SETTINGS[k]) filtered[k] = mine[k]; }
     // "ran" is the `roachtest run` invocation stamp (arm.ts, baked into the path and shared
     // by every run of the arm, and by sibling A/B arms of the same invocation). It is NOT a
     // per-run test.log start time: an arm bundles many runs with different start times, so
@@ -189,8 +185,8 @@ function analyze(arms){
       commit:(arm.commit||null), branch:(arm.branch||null),
       settings:filtered};
   }
-  var prov_details = [[cl, _arm_detail(prov_ctl, cl, "--ctl-p95", dual?prov_exp:null)]];
-  if (dual) prov_details.push([el, _arm_detail(prov_exp, el, "--lh-p95", prov_ctl)]);
+  var prov_details = [[cl, _arm_detail(prov_ctl, cl, "--ctl-p95")]];
+  if (dual) prov_details.push([el, _arm_detail(prov_exp, el, "--lh-p95")]);
 
   // ---- Timing (elapsed-to-stall) from crossings ----
   var stall_pcts = [50,90,100];

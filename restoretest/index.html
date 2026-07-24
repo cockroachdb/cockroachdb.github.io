@@ -1046,28 +1046,15 @@ function analyze(arms) {
       conclusion = "Primary family: no cells reach exact p<" + ALPHA + ".";
     }
   }
-  function diff_settings(mine, other) {
-    mine = mine || {};
-    if (!other) {
-      var cp = {};
-      for (var k in mine) cp[k] = mine[k];
-      return cp;
-    }
-    var out = {};
-    for (var k2 in mine) {
-      if (other[k2] !== mine[k2]) out[k2] = mine[k2];
-    }
-    return out;
-  }
   function _fmtTs(ts) {
     var m = /^(\d{2})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/.exec(ts || "");
     return m ? "20" + m[1] + "/" + m[2] + "/" + m[3] + " " + m[4] + ":" + m[5] + ":" + m[6] : null;
   }
-  function _arm_detail(arm, label, hue, otherProv) {
-    var settings = diff_settings(arm.settings, otherProv ? otherProv.settings : null);
+  function _arm_detail(arm, label, hue) {
+    var mine = arm.settings || {};
     var filtered = {};
-    for (var k in settings) {
-      if (!HARNESS_SETTINGS[k]) filtered[k] = settings[k];
+    for (var k in mine) {
+      if (!HARNESS_SETTINGS[k]) filtered[k] = mine[k];
     }
     var ran = _fmtTs(arm.ts) || null;
     return {
@@ -1084,8 +1071,8 @@ function analyze(arms) {
       settings: filtered
     };
   }
-  var prov_details = [[cl, _arm_detail(prov_ctl, cl, "--ctl-p95", dual ? prov_exp : null)]];
-  if (dual) prov_details.push([el, _arm_detail(prov_exp, el, "--lh-p95", prov_ctl)]);
+  var prov_details = [[cl, _arm_detail(prov_ctl, cl, "--ctl-p95")]];
+  if (dual) prov_details.push([el, _arm_detail(prov_exp, el, "--lh-p95")]);
   var stall_pcts = [50, 90, 100];
   function _stall_elapsed(runs, pct) {
     var out = [];
@@ -3944,23 +3931,6 @@ var MAX_SETS = 5;
       return s + "#" + (i2 + 1);
     });
   }
-  function armDurAvg(a) {
-    if (!a || !a.runs || !a.runs.length) return null;
-    var tot = 0, n = 0;
-    a.runs.forEach(function(r) {
-      var el = r && r.elapsed;
-      if (!Array.isArray(el) || !el.length) return;
-      var mx = 0;
-      for (var i = 0; i < el.length; i++) {
-        if (el[i] > mx) mx = el[i];
-      }
-      if (mx > 0) {
-        tot += mx;
-        n++;
-      }
-    });
-    return n ? tot / n : null;
-  }
   function armsForSelection() {
     var chosen = [SEL[0], SEL[1]].filter(function(x) {
       return x != null;
@@ -3986,7 +3956,7 @@ var MAX_SETS = 5;
       if (short.indexOf(date) === 0) nameHtml = '<b class="armname">' + esc(short) + "</b>";
       else nameHtml = '<span class="armdate">' + esc(date) + '</span> <b class="armname">' + esc(short) + "</b>";
       var sub = [];
-      var d = armDurAvg(a), cnt = a.runs ? a.runs.length : 0;
+      var d = avgTimeTo100(a.runs), cnt = a.runs ? a.runs.length : 0;
       sub.push(cnt + "x" + (d != null ? " " + fmtDur(d) : ""));
       if (a.sha) sub.push(a.sha.slice(0, 8));
       var st = fmtSettings(a.settings);
