@@ -217,15 +217,15 @@ function _dlRow(o){
 // Elapsed to reach each download % per arm. 'both' shows A|B|Δ|Δ%|p; a single arm shows
 // just that arm's elapsed. Less time is better (negative Δ green).
 function time_to_stall_table(ctx, armMode?){
-  if (!ctx.dual || !ctx.time_to_stall.length) return "";
+  if (!ctx.time_to_stall.length) return "";
   var la = ctx.control_label, lb = ctx.experiment_label;
-  var both = (armMode === undefined || armMode === 'both');
+  var solo = !ctx.dual, both = !solo && (armMode === undefined || armMode === 'both'), mode = solo ? 'A' : armMode;
   var secCell = function(v, sd, n){ if (v === null || v === undefined) return "–";
     var s = (n > 1) ? '<span class="sd">±'+(sd||0).toFixed(0)+'</span>' : "";
     return '<span class="pval">'+v.toFixed(0)+'</span><span class="unit">s</span>'+s; };
-  var out = [_dlHead("Progress", both, la, lb, armMode, " elapsed", "Δ s")];
+  var out = [_dlHead("Progress", both, la, lb, mode, " elapsed", "Δ s")];
   ctx.time_to_stall.forEach(function(r){
-    out.push(_dlRow({label:r.pct+'%', both:both, armMode:armMode,
+    out.push(_dlRow({label:r.pct+'%', both:both, armMode:mode,
       a:r.a, aStd:r.a_std, b:r.b, bStd:r.b_std, nCtl:ctx.n_ctl, nExp:ctx.n_exp,
       d:r.dsec, dpct:r.dpct, p:r.p, goodPos:false,
       fmtVal:secCell, deltaVal:function(d){return _sms(d);}, deltaUnit:""}));
@@ -238,9 +238,9 @@ function time_to_stall_table(ctx, armMode?){
 // by #nodes — same source as the download chart's MB/s axis), so shown as-is; nd only picks
 // the unit wording.
 function mbps_table(ctx, armMode?){
-  if (!ctx.dual || !ctx.mbps_rows || !ctx.mbps_rows.length) return "";
+  if (!ctx.mbps_rows || !ctx.mbps_rows.length) return "";
   var la = ctx.control_label, lb = ctx.experiment_label;
-  var both = (armMode === undefined || armMode === 'both');
+  var solo = !ctx.dual, both = !solo && (armMode === undefined || armMode === 'both'), mode = solo ? 'A' : armMode;
   var nd = (ctx.nodes && ctx.nodes > 0) ? ctx.nodes : null;
   var unit = 'MB/s', unitSpan = '<span class="unit">'+unit+'</span>';
   // The rate is per-node; say so once on the row label ("avg MB/s" -> "avg MB/s/node")
@@ -249,9 +249,9 @@ function mbps_table(ctx, armMode?){
   var valCell = function(v, sd, n){ if (v === null || v === undefined) return "–";
     var s = (n > 1) ? '<span class="sd">±'+_num(sd||0)+'</span>' : "";
     return '<span class="pval">'+_num(v)+'</span>'+unitSpan+s; };
-  var out = [_dlHead("throughput", both, la, lb, armMode, "", "Δ")];
+  var out = [_dlHead("throughput", both, la, lb, mode, "", "Δ")];
   ctx.mbps_rows.forEach(function(r){
-    out.push(_dlRow({label:rowLabel(r.label), both:both, armMode:armMode,
+    out.push(_dlRow({label:rowLabel(r.label), both:both, armMode:mode,
       a:r.a, aStd:r.a_std, b:r.b, bStd:r.b_std, nCtl:ctx.n_ctl, nExp:ctx.n_exp,
       d:r.d, dpct:r.dpct, p:r.p, goodPos:true,
       fmtVal:valCell, deltaVal:function(d){return _sms(d);}, deltaUnit:unitSpan}));
@@ -278,7 +278,6 @@ function _mbUnit(vals){   // pick MB/GB/TB for a set of byte magnitudes
   return { unit: "MB", div: 1 };
 }
 function pdist_table(ctx, armMode?){
-  if (!ctx.dual) return "";
   var s0 = ctx.series && (ctx.series.agg || (ctx.op_order && ctx.series[ctx.op_order[0]]));
   if (!s0 || !s0.rDeltaRuns) return "";
   var peaks = function(arm){
@@ -294,14 +293,41 @@ function pdist_table(ctx, armMode?){
   var mw = (cv.length && ev.length) ? mann_whitney(cv, ev) : [NAN, NAN, "none"];
   var d = (cs.mean != null && es.mean != null) ? es.mean - cs.mean : null;
   var dpct = (d != null && cs.mean) ? d / cs.mean * 100.0 : null;
-  var la = ctx.control_label, lb = ctx.experiment_label, both = (armMode === undefined || armMode === "both");
+  var la = ctx.control_label, lb = ctx.experiment_label;
+  var solo = !ctx.dual, both = !solo && (armMode === undefined || armMode === "both"), mode = solo ? 'A' : armMode;
   var u = _mbUnit([cs.mean, es.mean, d]);
   var valCell = function(v, sd, n){ if (v == null) return "–";
     var s = (n > 1) ? '<span class="sd">±'+_num((sd||0)/u.div)+'</span>' : "";
     return '<span class="pval">'+_num(v/u.div)+'</span><span class="unit">'+u.unit+'</span>'+s; };
+  // Initial skew: at the FIRST sample, the across-node spread (max−min = rdelta) as a % of the
+  // across-node mean (rmean), per run, averaged per arm. Captures how unevenly the download starts.
+  var initSkew = function(arm){
+    var dr = (s0.rDeltaRuns && s0.rDeltaRuns[arm]) || [], mr = (s0.rMeanRuns && s0.rMeanRuns[arm]) || [], o = [];
+    for (var i=0;i<dr.length;i++){
+      var dd = dr[i], mm = mr[i];
+      if (!dd || !dd.length || !mm || !mm.length) continue;
+      var delta = dd[0].y, mean = mm[0].y;
+      if (delta == null || mean == null || !mean) continue;
+      o.push(delta / mean * 100.0);
+    }
+    return o;
+  };
+  var civ = initSkew("ctl"), eiv = initSkew("exp");
+  var cis = _summ(civ), eis = _summ(eiv);
+  var imw = (civ.length && eiv.length) ? mann_whitney(civ, eiv) : [NAN, NAN, "none"];
+  var id = (cis.mean != null && eis.mean != null) ? eis.mean - cis.mean : null;
+  var idpct = (id != null && cis.mean) ? id / cis.mean * 100.0 : null;
+  var pctCell = function(v, sd, n){ if (v == null) return "–";
+    var s = (n > 1) ? '<span class="sd">±'+_num(sd||0)+'</span>' : "";
+    return '<span class="pval">'+_num(v)+'</span><span class="unit">%</span>'+s; };
   var link = ' <a class="showgraph" data-pdist-show href="#" title="show the per-node distribution over time"></a>';
-  var out = [_dlHead("progress distribution", both, la, lb, armMode, "", "Δ")];
-  out.push(_dlRow({label:'max delta'+link, both:both, armMode:armMode,
+  var out = [_dlHead("progress distribution", both, la, lb, mode, "", "Δ")];
+  out.push(_dlRow({label:'initial skew', both:both, armMode:mode,
+    a:cis.mean, aStd:cis.std, b:eis.mean, bStd:eis.std, nCtl:ctx.n_ctl, nExp:ctx.n_exp,
+    d:id, dpct:idpct, p:(imw[1] as number), goodPos:false,   // less starting skew is better
+    fmtVal:pctCell, deltaVal:function(dd){return _sms(dd);},
+    deltaUnit:'<span class="unit">%</span>'}));
+  out.push(_dlRow({label:'max delta'+link, both:both, armMode:mode,
     a:cs.mean, aStd:cs.std, b:es.mean, bStd:es.std, nCtl:ctx.n_ctl, nExp:ctx.n_exp,
     d:d, dpct:dpct, p:(mw[1] as number), goodPos:false,   // less node skew is better
     fmtVal:valCell, deltaVal:function(dd){return _sms(dd/u.div);},

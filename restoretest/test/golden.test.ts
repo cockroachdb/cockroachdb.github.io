@@ -13,6 +13,17 @@ const OLD = require("./golden/core.reference.cjs");
 
 const OPS = ["agg", "stockLevel", "orderStatus", "delivery", "newOrder", "payment"];
 
+// Keys the frozen OLD oracle can't track (display/serialization or intentionally-redefined):
+//   runs/perRun/prov_details — see note in the ctx test below
+//   rRatio* — node-skew ratio, intentionally redefined to (max−min)/initial-mean (was the OLD
+//             oracle's (max−mean)/instantaneous-mean). Present in ctx.series AND data_json.series.
+//   time_to_stall / mbps_rows — now ALSO populated for a solo arm (single-column tables); the
+//             frozen oracle only computes them for dual. Dual values are unchanged and re-checked
+//             explicitly below.
+const DROP: any = { runs: 1, perRun: 1, prov_details: 1, rRatio: 1, rRatioPc: 1, rRatioRuns: 1, rRatioPcRuns: 1,
+  time_to_stall: 1, mbps_rows: 1 };
+const drop = (_k: string, v: any) => (DROP[_k] ? undefined : v);
+
 // The OLD oracle parses the pre-refactor body (row/columnar); the NEW layer parses the v:2
 // body. Both fixtures serialize the SAME underlying numbers, so an identical analyze() ctx
 // proves the format migration + new parse_run preserve compute semantics.
@@ -22,21 +33,22 @@ function checkCatalog(name: string, makeOld: () => any[], makeNew: () => any[]) 
     const newCtx = NEW.CORE.analyze(makeNew());
 
     it("analyze() ctx is identical", () => {
-      // Drop keys that are display/serialization, not the compute invariant, and that the
-      // frozen OLD oracle can't track:
-      //   runs         — raw run BODIES (old row/columnar vs v:2 differ by construction)
-      //   perRun       — dropped with the unused solo-table path
-      //   prov_details — provenance TABLE formatting (version-as-is vs old sha/dirty split)
-      // Everything else — cells, stats, series, timing means/stds, labels — must match.
-      const drop = (_k: string, v: any) =>
-        (_k === "runs" || _k === "perRun" || _k === "prov_details" ? undefined : v);
+      // Everything except the DROP keys (see above) — cells, stats, series, timing, labels — matches.
       expect(JSON.stringify(newCtx, drop)).toEqual(JSON.stringify(oldCtx, drop));
     });
 
     it("data_json() is identical", () => {
-      expect(JSON.stringify(NEW.CORE.data_json(newCtx))).toEqual(
-        JSON.stringify(OLD.data_json(oldCtx)),
+      expect(JSON.stringify(NEW.CORE.data_json(newCtx), drop)).toEqual(
+        JSON.stringify(OLD.data_json(oldCtx), drop),
       );
+    });
+
+    // The dual comparison tables are unchanged by the solo-rendering work — re-check them against
+    // the oracle byte-for-byte (they're dropped above only because solo now adds new rows).
+    it("dual time_to_stall & mbps_rows match the oracle", () => {
+      if (!oldCtx.dual) return;   // solo rows are a new feature the frozen oracle predates
+      expect(JSON.stringify(newCtx.time_to_stall)).toEqual(JSON.stringify(oldCtx.time_to_stall));
+      expect(JSON.stringify(newCtx.mbps_rows)).toEqual(JSON.stringify(oldCtx.mbps_rows));
     });
 
     // NOTE: the HTML render generators (render_body, tables, bake_svg) are intentionally NO

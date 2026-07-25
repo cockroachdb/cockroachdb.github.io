@@ -204,21 +204,22 @@ function analyze(arms){
   }
   var timing = {ctl:_agg_timing(ctl_runs), exp:_agg_timing(exp_runs)};
 
+  // Elapsed-to-download-% per arm. Dual: A|B|Δ|Δ%|p. Solo: just the control arm's elapsed
+  // (single column) so the table still shows for one run set. Dual rows are unchanged.
   var time_to_stall = [];
-  if (dual){
-    stall_pcts.forEach(function(pct){
-      var cv = _stall_elapsed(ctl_runs, pct), ev = _stall_elapsed(exp_runs, pct);
-      var mw = (cv.length && ev.length) ? mann_whitney(cv, ev) : [NAN, NAN, "none"];
-      var ct = timing.ctl[pct], et = timing.exp[pct];
-      var dsec = null, dpct = null;
-      if (ct.mean !== null && et.mean !== null){
-        dsec = et.mean - ct.mean;
-        if (ct.mean) dpct = dsec/ct.mean*100.0;
-      }
-      time_to_stall.push({pct:pct, a:ct.mean, a_std:ct.std, b:et.mean, b_std:et.std,
-        dsec:dsec, dpct:dpct, p:mw[1]});
-    });
-  }
+  stall_pcts.forEach(function(pct){
+    var ct = timing.ctl[pct], et = timing.exp[pct];
+    if (!dual){ if (ct.mean !== null) time_to_stall.push({pct:pct, a:ct.mean, a_std:ct.std, b:null, b_std:null, dsec:null, dpct:null, p:NAN}); return; }
+    var cv = _stall_elapsed(ctl_runs, pct), ev = _stall_elapsed(exp_runs, pct);
+    var mw = (cv.length && ev.length) ? mann_whitney(cv, ev) : [NAN, NAN, "none"];
+    var dsec = null, dpct = null;
+    if (ct.mean !== null && et.mean !== null){
+      dsec = et.mean - ct.mean;
+      if (ct.mean) dpct = dsec/ct.mean*100.0;
+    }
+    time_to_stall.push({pct:pct, a:ct.mean, a_std:ct.std, b:et.mean, b_std:et.std,
+      dsec:dsec, dpct:dpct, p:mw[1]});
+  });
 
   // ---- Download throughput (MB/s): per-run avg & peak, with A/B stats ----
   // One value per run (avg or peak of its MB/s readings), so the A/B comparison is the
@@ -239,18 +240,20 @@ function analyze(arms){
   }
   var _vmean = function(xs){ var s=0; for (var i=0;i<xs.length;i++) s+=xs[i]; return xs.length?s/xs.length:null; };
   var _vmax = function(xs){ return xs.length ? Math.max.apply(null, xs) : null; };
+  // Dual: A|B|Δ|Δ%|p. Solo: just the control arm's avg/peak MB/s (single column). Dual unchanged.
   var mbps_rows = [];
-  if (dual){
-    [["avg MB/s", _vmean], ["peak MB/s", _vmax]].forEach(function(pr){
-      var cv = _mbps_per_run(ctl_runs, pr[1]), ev = _mbps_per_run(exp_runs, pr[1]);
-      var cs = _summ(cv), es = _summ(ev);
-      var mw = (cv.length && ev.length) ? mann_whitney(cv, ev) : [NAN, NAN, "none"];
-      var d = (cs.mean !== null && es.mean !== null) ? es.mean - cs.mean : null;
-      var dpct = (d !== null && cs.mean) ? d/cs.mean*100.0 : null;
-      mbps_rows.push({label:pr[0], a:cs.mean, a_std:cs.std, b:es.mean, b_std:es.std,
-        d:d, dpct:dpct, p:mw[1]});
-    });
-  }
+  [["avg MB/s", _vmean], ["peak MB/s", _vmax]].forEach(function(pr){
+    var cv = _mbps_per_run(ctl_runs, pr[1]);
+    var cs = _summ(cv);
+    if (!dual){ if (cs.mean !== null) mbps_rows.push({label:pr[0], a:cs.mean, a_std:cs.std, b:null, b_std:null, d:null, dpct:null, p:NAN}); return; }
+    var ev = _mbps_per_run(exp_runs, pr[1]);
+    var es = _summ(ev);
+    var mw = (cv.length && ev.length) ? mann_whitney(cv, ev) : [NAN, NAN, "none"];
+    var d = (cs.mean !== null && es.mean !== null) ? es.mean - cs.mean : null;
+    var dpct = (d !== null && cs.mean) ? d/cs.mean*100.0 : null;
+    mbps_rows.push({label:pr[0], a:cs.mean, a_std:cs.std, b:es.mean, b_std:es.std,
+      d:d, dpct:dpct, p:mw[1]});
+  });
   // Nodes (from the test name, e.g. ".../nodes=5/...") so the table reports per-node
   // MB/s, matching the download chart's MB/s axis. null -> unknown -> cluster total.
   var nodes = (function(){ for (var i=0;i<arms.length;i++){ var t = arms[i] && arms[i].test;

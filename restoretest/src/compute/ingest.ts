@@ -36,7 +36,10 @@ function qps_weighted_agg(lat, qps){
 // %/MB-s are then filled onto every sample by interpolation (holding the endpoints — the
 // steady-state 100% tail), so % is defined at every tick even when download rode a coarser
 // clock; when it shares the sample clock (the common case) the fill is exact. Per-node remote
-// MB remaining is reduced across nodes to min/mean/max + the long-pole ratio (max-mean)/mean,
+// MB remaining is reduced across nodes to min/mean/max, the absolute spread (max-min), and the
+// skew ratio = (max-min) / the run's INITIAL across-node mean — a fixed per-run baseline, so the
+// ratio stays byte-independent yet decays to 0 as the download completes (instead of blowing up as
+// the instantaneous mean approaches 0),
 // INCLUDING nodes already at 0. The report emits only the real ops; the "agg" op (Overall
 // Workload Latency) is derived here as the per-sample QPS-weighted mean.
 function _at(col, i){ return (Array.isArray(col) && i < col.length) ? col[i] : null; }
@@ -50,6 +53,7 @@ function parse_run(run){
   var nodeCols = Array.isArray(dl.node_remote_mb) ? dl.node_remote_mb : [];
 
   var samples = [];
+  var initMean = null;   // the run's across-node mean at the first tick with node data (rratio baseline)
   for (var i=0;i<el.length;i++){
     var s: any = {el:+el[i], pct:null, lat:{}, qps:{}, ctx:{}};
     for (var op in ops){
@@ -68,7 +72,9 @@ function parse_run(run){
         var mn=vals[0], mx=vals[0], sum=0;
         for (var j=0;j<vals.length;j++){ var vv=vals[j]; if(vv<mn)mn=vv; if(vv>mx)mx=vv; sum+=vv; }
         var mean=sum/vals.length;
-        s.rmin=mn; s.rmean=mean; s.rmax=mx; s.rdelta=(mx-mn); s.rratio=(mean>0?(mx-mean)/mean:0);
+        if (initMean == null) initMean = mean;   // fixed baseline = first tick's across-node mean
+        s.rmin=mn; s.rmean=mean; s.rmax=mx; s.rdelta=(mx-mn);
+        s.rratio=(initMean>0 ? (mx-mn)/initMean : 0);   // spread relative to the run's INITIAL mean
       }
     }
     samples.push(s);

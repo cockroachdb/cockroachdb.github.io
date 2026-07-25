@@ -366,6 +366,7 @@ function parse_run(run) {
   var pctCol = dl.pct, mbpsCol = dl.mbps;
   var nodeCols = Array.isArray(dl.node_remote_mb) ? dl.node_remote_mb : [];
   var samples = [];
+  var initMean = null;
   for (var i = 0; i < el.length; i++) {
     var s = { el: +el[i], pct: null, lat: {}, qps: {}, ctx: {} };
     for (var op in ops) {
@@ -391,11 +392,12 @@ function parse_run(run) {
           sum += vv;
         }
         var mean = sum / vals.length;
+        if (initMean == null) initMean = mean;
         s.rmin = mn;
         s.rmean = mean;
         s.rmax = mx;
         s.rdelta = mx - mn;
-        s.rratio = mean > 0 ? (mx - mean) / mean : 0;
+        s.rratio = initMean > 0 ? (mx - mn) / initMean : 0;
       }
     }
     samples.push(s);
@@ -1091,28 +1093,30 @@ function analyze(arms) {
   }
   var timing = { ctl: _agg_timing(ctl_runs), exp: _agg_timing(exp_runs) };
   var time_to_stall = [];
-  if (dual) {
-    stall_pcts.forEach(function(pct) {
-      var cv = _stall_elapsed(ctl_runs, pct), ev = _stall_elapsed(exp_runs, pct);
-      var mw = cv.length && ev.length ? mann_whitney(cv, ev) : [NAN, NAN, "none"];
-      var ct = timing.ctl[pct], et = timing.exp[pct];
-      var dsec = null, dpct = null;
-      if (ct.mean !== null && et.mean !== null) {
-        dsec = et.mean - ct.mean;
-        if (ct.mean) dpct = dsec / ct.mean * 100;
-      }
-      time_to_stall.push({
-        pct,
-        a: ct.mean,
-        a_std: ct.std,
-        b: et.mean,
-        b_std: et.std,
-        dsec,
-        dpct,
-        p: mw[1]
-      });
+  stall_pcts.forEach(function(pct) {
+    var ct = timing.ctl[pct], et = timing.exp[pct];
+    if (!dual) {
+      if (ct.mean !== null) time_to_stall.push({ pct, a: ct.mean, a_std: ct.std, b: null, b_std: null, dsec: null, dpct: null, p: NAN });
+      return;
+    }
+    var cv = _stall_elapsed(ctl_runs, pct), ev = _stall_elapsed(exp_runs, pct);
+    var mw = cv.length && ev.length ? mann_whitney(cv, ev) : [NAN, NAN, "none"];
+    var dsec = null, dpct = null;
+    if (ct.mean !== null && et.mean !== null) {
+      dsec = et.mean - ct.mean;
+      if (ct.mean) dpct = dsec / ct.mean * 100;
+    }
+    time_to_stall.push({
+      pct,
+      a: ct.mean,
+      a_std: ct.std,
+      b: et.mean,
+      b_std: et.std,
+      dsec,
+      dpct,
+      p: mw[1]
     });
-  }
+  });
   function _run_mbps(run) {
     var pts = [];
     run.forEach(function(s) {
@@ -1142,25 +1146,29 @@ function analyze(arms) {
     return xs.length ? Math.max.apply(null, xs) : null;
   };
   var mbps_rows = [];
-  if (dual) {
-    [["avg MB/s", _vmean], ["peak MB/s", _vmax]].forEach(function(pr) {
-      var cv = _mbps_per_run(ctl_runs, pr[1]), ev = _mbps_per_run(exp_runs, pr[1]);
-      var cs = _summ(cv), es = _summ(ev);
-      var mw = cv.length && ev.length ? mann_whitney(cv, ev) : [NAN, NAN, "none"];
-      var d = cs.mean !== null && es.mean !== null ? es.mean - cs.mean : null;
-      var dpct = d !== null && cs.mean ? d / cs.mean * 100 : null;
-      mbps_rows.push({
-        label: pr[0],
-        a: cs.mean,
-        a_std: cs.std,
-        b: es.mean,
-        b_std: es.std,
-        d,
-        dpct,
-        p: mw[1]
-      });
+  [["avg MB/s", _vmean], ["peak MB/s", _vmax]].forEach(function(pr) {
+    var cv = _mbps_per_run(ctl_runs, pr[1]);
+    var cs = _summ(cv);
+    if (!dual) {
+      if (cs.mean !== null) mbps_rows.push({ label: pr[0], a: cs.mean, a_std: cs.std, b: null, b_std: null, d: null, dpct: null, p: NAN });
+      return;
+    }
+    var ev = _mbps_per_run(exp_runs, pr[1]);
+    var es = _summ(ev);
+    var mw = cv.length && ev.length ? mann_whitney(cv, ev) : [NAN, NAN, "none"];
+    var d = cs.mean !== null && es.mean !== null ? es.mean - cs.mean : null;
+    var dpct = d !== null && cs.mean ? d / cs.mean * 100 : null;
+    mbps_rows.push({
+      label: pr[0],
+      a: cs.mean,
+      a_std: cs.std,
+      b: es.mean,
+      b_std: es.std,
+      d,
+      dpct,
+      p: mw[1]
     });
-  }
+  });
   var nodes = (function() {
     for (var i = 0; i < arms.length; i++) {
       var t = arms[i] && arms[i].test;
@@ -1530,20 +1538,20 @@ function _dlRow(o) {
   return '<tr><td class="l stage">' + o.label + "</td><td>" + a + "</td><td>" + b + "</td><td" + dc + ">" + dcell + "</td><td" + dc + ">" + dpctc + '</td><td class="pcol' + (sig ? "" : " dim") + '">' + pcell + "</td></tr>";
 }
 function time_to_stall_table(ctx, armMode) {
-  if (!ctx.dual || !ctx.time_to_stall.length) return "";
+  if (!ctx.time_to_stall.length) return "";
   var la = ctx.control_label, lb = ctx.experiment_label;
-  var both = armMode === void 0 || armMode === "both";
+  var solo = !ctx.dual, both = !solo && (armMode === void 0 || armMode === "both"), mode = solo ? "A" : armMode;
   var secCell = function(v, sd, n) {
     if (v === null || v === void 0) return "–";
     var s = n > 1 ? '<span class="sd">±' + (sd || 0).toFixed(0) + "</span>" : "";
     return '<span class="pval">' + v.toFixed(0) + '</span><span class="unit">s</span>' + s;
   };
-  var out = [_dlHead("Progress", both, la, lb, armMode, " elapsed", "Δ s")];
+  var out = [_dlHead("Progress", both, la, lb, mode, " elapsed", "Δ s")];
   ctx.time_to_stall.forEach(function(r) {
     out.push(_dlRow({
       label: r.pct + "%",
       both,
-      armMode,
+      armMode: mode,
       a: r.a,
       aStd: r.a_std,
       b: r.b,
@@ -1565,9 +1573,9 @@ function time_to_stall_table(ctx, armMode) {
   return out.join("");
 }
 function mbps_table(ctx, armMode) {
-  if (!ctx.dual || !ctx.mbps_rows || !ctx.mbps_rows.length) return "";
+  if (!ctx.mbps_rows || !ctx.mbps_rows.length) return "";
   var la = ctx.control_label, lb = ctx.experiment_label;
-  var both = armMode === void 0 || armMode === "both";
+  var solo = !ctx.dual, both = !solo && (armMode === void 0 || armMode === "both"), mode = solo ? "A" : armMode;
   var nd = ctx.nodes && ctx.nodes > 0 ? ctx.nodes : null;
   var unit = "MB/s", unitSpan = '<span class="unit">' + unit + "</span>";
   var rowLabel = function(lbl) {
@@ -1578,12 +1586,12 @@ function mbps_table(ctx, armMode) {
     var s = n > 1 ? '<span class="sd">±' + _num(sd || 0) + "</span>" : "";
     return '<span class="pval">' + _num(v) + "</span>" + unitSpan + s;
   };
-  var out = [_dlHead("throughput", both, la, lb, armMode, "", "Δ")];
+  var out = [_dlHead("throughput", both, la, lb, mode, "", "Δ")];
   ctx.mbps_rows.forEach(function(r) {
     out.push(_dlRow({
       label: rowLabel(r.label),
       both,
-      armMode,
+      armMode: mode,
       a: r.a,
       aStd: r.a_std,
       b: r.b,
@@ -1617,7 +1625,6 @@ function _mbUnit(vals) {
   return { unit: "MB", div: 1 };
 }
 function pdist_table(ctx, armMode) {
-  if (!ctx.dual) return "";
   var s0 = ctx.series && (ctx.series.agg || ctx.op_order && ctx.series[ctx.op_order[0]]);
   if (!s0 || !s0.rDeltaRuns) return "";
   var peaks = function(arm) {
@@ -1639,19 +1646,62 @@ function pdist_table(ctx, armMode) {
   var mw = cv.length && ev.length ? mann_whitney(cv, ev) : [NAN, NAN, "none"];
   var d = cs.mean != null && es.mean != null ? es.mean - cs.mean : null;
   var dpct = d != null && cs.mean ? d / cs.mean * 100 : null;
-  var la = ctx.control_label, lb = ctx.experiment_label, both = armMode === void 0 || armMode === "both";
+  var la = ctx.control_label, lb = ctx.experiment_label;
+  var solo = !ctx.dual, both = !solo && (armMode === void 0 || armMode === "both"), mode = solo ? "A" : armMode;
   var u = _mbUnit([cs.mean, es.mean, d]);
   var valCell = function(v, sd, n) {
     if (v == null) return "–";
     var s = n > 1 ? '<span class="sd">±' + _num((sd || 0) / u.div) + "</span>" : "";
     return '<span class="pval">' + _num(v / u.div) + '</span><span class="unit">' + u.unit + "</span>" + s;
   };
+  var initSkew = function(arm) {
+    var dr = s0.rDeltaRuns && s0.rDeltaRuns[arm] || [], mr = s0.rMeanRuns && s0.rMeanRuns[arm] || [], o = [];
+    for (var i = 0; i < dr.length; i++) {
+      var dd = dr[i], mm = mr[i];
+      if (!dd || !dd.length || !mm || !mm.length) continue;
+      var delta = dd[0].y, mean = mm[0].y;
+      if (delta == null || mean == null || !mean) continue;
+      o.push(delta / mean * 100);
+    }
+    return o;
+  };
+  var civ = initSkew("ctl"), eiv = initSkew("exp");
+  var cis = _summ(civ), eis = _summ(eiv);
+  var imw = civ.length && eiv.length ? mann_whitney(civ, eiv) : [NAN, NAN, "none"];
+  var id = cis.mean != null && eis.mean != null ? eis.mean - cis.mean : null;
+  var idpct = id != null && cis.mean ? id / cis.mean * 100 : null;
+  var pctCell = function(v, sd, n) {
+    if (v == null) return "–";
+    var s = n > 1 ? '<span class="sd">±' + _num(sd || 0) + "</span>" : "";
+    return '<span class="pval">' + _num(v) + '</span><span class="unit">%</span>' + s;
+  };
   var link = ' <a class="showgraph" data-pdist-show href="#" title="show the per-node distribution over time"></a>';
-  var out = [_dlHead("progress distribution", both, la, lb, armMode, "", "Δ")];
+  var out = [_dlHead("progress distribution", both, la, lb, mode, "", "Δ")];
+  out.push(_dlRow({
+    label: "initial skew",
+    both,
+    armMode: mode,
+    a: cis.mean,
+    aStd: cis.std,
+    b: eis.mean,
+    bStd: eis.std,
+    nCtl: ctx.n_ctl,
+    nExp: ctx.n_exp,
+    d: id,
+    dpct: idpct,
+    p: imw[1],
+    goodPos: false,
+    // less starting skew is better
+    fmtVal: pctCell,
+    deltaVal: function(dd) {
+      return _sms(dd);
+    },
+    deltaUnit: '<span class="unit">%</span>'
+  }));
   out.push(_dlRow({
     label: "max delta" + link,
     both,
-    armMode,
+    armMode: mode,
     a: cs.mean,
     aStd: cs.std,
     b: es.mean,
@@ -3001,7 +3051,7 @@ function runChart(RC) {
           };
           for (var rv = 0; rv <= rtop + 1e-9; rv += rstep)
             s.push('<text class="y2tick" x="' + (x1 + 4) + '" y="' + (Yr(rv) + 2).toFixed(1) + '" text-anchor="start">' + (y2mode === "Delta" ? axn(rv / rdiv) : axn(rv) + "×") + "</text>");
-          s.push('<text class="axtitle" transform="rotate(-90 ' + (x1 + 30) + " " + (yt + yb) / 2 + ')" x="' + (x1 + 30) + '" y="' + (yt + yb) / 2 + '" text-anchor="middle">' + (y2mode === "Delta" ? "max−min " + runit + " by node" : "max-to-mean skew") + "</text>");
+          s.push('<text class="axtitle" transform="rotate(-90 ' + (x1 + 30) + " " + (yt + yb) / 2 + ')" x="' + (x1 + 30) + '" y="' + (yt + yb) / 2 + '" text-anchor="middle">' + (y2mode === "Delta" ? "max−min " + runit + " by node" : "skew ÷ initial mean") + "</text>");
           var rline = function(pl, color, key) {
             if (!pl) return;
             var cc = clipPts(pl, xmin, xmax);
