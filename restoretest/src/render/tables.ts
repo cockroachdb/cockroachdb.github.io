@@ -1,5 +1,5 @@
 // HTML table generators (cells, op tables, time tables, provenance, throughput).
-import { esc, _num, _pct, _sms, _pfmt, _g2, _e0 } from "../format/format";
+import { esc, _num, _pct, _sms } from "../format/format";
 import { isnan, NAN, pyRound } from "../util";
 import { ALPHA, MAIN_METRICS } from "../model/constants";
 import { mann_whitney, _summ } from "../compute/stats";
@@ -12,36 +12,56 @@ function _avg(s, unit){
   var sd = (s.n > 1) ? '<span class="sd">±'+_num(s.std||0)+'</span>' : "";
   return '<span class="pval">'+_num(s.mean)+'</span><span class="unit">'+unit+'</span>'+sd;
 }
-// opts (optional): {unit:"ms"|"%", higherBetter:bool}. Default is latency-style —
-// unit "ms" and lower-is-better (a negative delta is the "good" green). The
-// download column passes {unit:"%", higherBetter:true} so more-downloaded is green.
-function _group_cells(st, dual, op, metric, stage_pct, singleArm?, opts?){
+// arm key -> role letter (used for data-arm attributes and armMode filtering).
+var LETTER = {ctl:'A', exp:'B', c:'C'};
+// Graded delta dimming by p: full at significant (p<=ALPHA), slightly dimmed when marginal
+// (ALPHA<p<0.2), more dimmed when weak (p>=0.2 or no test). Softer than a binary keep/grey.
+function _dimClass(p){
+  if (isnan(p)) return " dim2";
+  if (p <= ALPHA) return "";
+  return p < 0.2 ? " dim1" : " dim2";
+}
+// p to two decimals, leading zero stripped (".13", ".05"); "<.01" when it rounds to zero.
+function _p2(p){
+  if (p === null || p === undefined || isnan(p)) return "–";
+  if (p < 0.005) return "<.01";
+  var s = p.toFixed(2);
+  return s.charAt(0) === "0" ? s.slice(1) : s;
+}
+// A latency cell's delta: relative Δ% (colored good/bad) + p, dimmed when not significant.
+// `d` = {delta_mean, delta_mean_pct, p}. goodPos flips which direction is green.
+function _delta_cell(d, metric, goodPos){
+  var dm_ids = 'data-metric="'+metric+'"';
+  var p = d.p, sig = (!isnan(p) && p < ALPHA), dimc = _dimClass(p);
+  var dm = d.delta_mean, dmp = d.delta_mean_pct;
+  if (dmp === null || dmp === undefined || isnan(p)) return '<td class="dcell'+dimc+'" '+dm_ids+'>–</td>';
+  var vr = (goodPos ? (dm > 0) : (dm < 0)) ? "--good" : "--bad";
+  var pcls = sig ? "psig" : "pns";
+  return '<td class="dcell'+dimc+'" '+dm_ids+'>'
+    + '<span class="dval" style="color:var('+vr+')">'+_pct(dmp)+'</span>'
+    + '<span class="pv '+pcls+'">p='+_p2(p)+'</span></td>';
+}
+// opts (optional): {unit:"ms"|"%", higherBetter:bool}. Default is latency-style — unit "ms"
+// and lower-is-better (a negative delta is the "good" green). The download column passes
+// {unit:"%", higherBetter:true} so more-downloaded is green.
+// Renders one metric group's cells for N arms, interleaved so each non-baseline arm sits next
+// to its own delta vs the baseline (arm 0): A | B | Δ(A-B) | C | Δ(A-C). `st` = _statsN() output
+// {arms:[{s}], cmp:[{delta…,p}]}. A single arm renders just its value cell. opts.valuesOnly emits
+// only the per-arm values (no delta columns) — used for the download % in the latency tables,
+// where the download reading is per-row context for the latency, not a compared metric.
+function _group_cells(st, op, metric, stage_pct, opts?){
   opts = opts || {}; var unit = opts.unit || "ms"; var goodPos = !!opts.higherBetter;
   var ids = 'data-op="'+op+'" data-metric="'+metric+'" data-stage="'+stage_pct+'"';
-  if (!dual){ var arm = singleArm || 'ctl';
-    return '<td class="vcell" data-arm="'+(arm==='ctl'?'A':'B')+'" '+ids+'>'+_avg(st[arm],unit)+'</td>'; }
-  var p = st.p;
-  var sig = (!isnan(p) && p < ALPHA);
-  var dm = st.delta_mean, dmp = st.delta_mean_pct;
-  // Only the delta cell dims when the difference isn't significant — the per-arm values (ctl/exp)
-  // are still valid measurements, so they stay at full opacity; it's just their difference that's
-  // noise. See the matching per-cell dimming in the download tables below.
-  var dimc = sig ? "" : " dim";
-  var a = '<td class="grpl vcell" data-arm="A" '+ids+'>'+_avg(st.ctl,unit)+'</td>';
-  var b = '<td class="vcell" data-arm="B" '+ids+'>'+_avg(st.exp,unit)+'</td>';
-  var dm_ids = 'data-metric="'+metric+'"';
-  var d;
-  if (dmp === null || dmp === undefined || isnan(p)){
-    d = '<td class="dcell'+dimc+'" '+dm_ids+'>–</td>';
-  } else {
-    var improved = goodPos ? (dm > 0) : (dm < 0);
-    var vr = improved ? "--good" : "--bad";
-    var pcls = sig ? "psig" : "pns";
-    d = '<td class="dcell'+dimc+'" '+dm_ids+'>'
-      + '<span class="dval" style="color:var('+vr+')">'+_pct(dmp)+'</span>'
-      + '<span class="pv '+pcls+'">p='+_pfmt(p)+'</span></td>';
+  var arms = st.arms, cmp = st.cmp;
+  if (arms.length === 1)
+    return '<td class="vcell" data-arm="'+(LETTER[arms[0].key]||'A')+'" '+ids+'>'+_avg(arms[0].s,unit)+'</td>';
+  // Only the delta cells dim when a difference isn't significant — the per-arm values stay lit.
+  var out = "";
+  for (var i=0;i<arms.length;i++){
+    out += '<td class="vcell'+(i===0?' grpl':'')+'" data-arm="'+(LETTER[arms[i].key]||'')+'" '+ids+'>'+_avg(arms[i].s,unit)+'</td>';
+    if (i>0 && !opts.valuesOnly) out += _delta_cell(cmp[i-1], metric, goodPos);
   }
-  return a+b+d;
+  return out;
 }
 // Elapsed at which to read run `i` of `arm` for this row: a fixed time, or that
 // run's own download-complete (+60s for done+1m). null if the run never completed.
@@ -50,55 +70,74 @@ function _rowTimeRun(sop, arm, i, row){
   var comp = _dlCrossT((sop.dlRuns[arm]||[])[i], 100);
   return comp==null ? null : (row.special==="done1m" ? comp+60 : comp);
 }
-// Summary/MWU stats over the per-run interpolated latencies at the row's time, shaped for
-// _group_cells (an A|B|Δ(p) group).
-function _stats(ctl, exp){
-  var cs = _summ(ctl), es = _summ(exp);
-  var mw = (ctl.length && exp.length) ? mann_whitney(ctl, exp) : [NAN, NAN, "none"];
-  var dm = (cs.mean!=null && es.mean!=null) ? es.mean-cs.mean : null;
-  var dmp = (dm!=null && cs.mean) ? dm/cs.mean*100.0 : null;
-  return {ctl:cs, exp:es, p:mw[1], delta_mean:dm, delta_mean_pct:dmp};
+// N-arm summary/MWU stats over per-arm value lists (arm 0 = baseline). Returns per-arm
+// summaries + one pairwise comparison (Δmean, Δ%, MWU p) of each later arm vs the baseline,
+// shaped for _group_cells (A | B | Δ(A-B) | C | Δ(A-C)). Deltas are baseline-relative — the
+// same two-sample math as the old A-vs-B, just applied per non-baseline arm.
+function _statsN(per){
+  var arms = per.map(function(p){ return {key:p.key, s:_summ(p.vals), vals:p.vals}; });
+  var base = arms[0], cmp = [];
+  for (var i=1;i<arms.length;i++){ var e = arms[i];
+    var mw = (base.vals.length && e.vals.length) ? mann_whitney(base.vals, e.vals) : [NAN, NAN, "none"];
+    var dm = (base.s.mean!=null && e.s.mean!=null) ? e.s.mean-base.s.mean : null;
+    var dmp = (dm!=null && base.s.mean) ? dm/base.s.mean*100.0 : null;
+    cmp.push({p:mw[1], delta_mean:dm, delta_mean_pct:dmp});
+  }
+  return {arms:arms, cmp:cmp};
 }
-function _time_cell(sop, metric, row){
+function _time_cell(sop, metric, row, shown){
   function vals(arm){ var rr = sop.elRuns[arm+"_"+metric]||[];
     return rr.map(function(pl,i){ var t=_rowTimeRun(sop,arm,i,row); return t==null?null:_iXY(pl,t); })
              .filter(function(v){return v!=null;}); }
-  return _stats(vals("ctl"), vals("exp"));
+  return _statsN(shown.map(function(a){ return {key:a, vals:vals(a)}; }));
 }
 // Per-run download % reached by the row's time. On the special rows every run is 100% by
 // construction (each is anchored at its own completion).
-function _dl_cell(sop, row){
+function _dl_cell(sop, row, shown){
   function vals(arm){ var rr = sop.dlRuns[arm]||[];
     var out = row.special ? rr.map(function(){ return 100; }) : rr.map(function(pl){ return _iXY(pl, row.t); });
     return out.filter(function(v){return v!=null;}); }
-  return _stats(vals("ctl"), vals("exp"));
+  return _statsN(shown.map(function(a){ return {key:a, vals:vals(a)}; }));
 }
-function op_time_table(op, sop, dual, la, lb, timeRows, armMode?){
-  var effDual = dual && (armMode===undefined || armMode==="both");
-  var singleArm = (armMode==="A") ? "ctl" : (armMode==="B") ? "exp" : null;
-  var dlOpts = {unit:"%", higherBetter:true};   // download: more is better -> green
+// armKeys = every arm present (['ctl'] | ['ctl','exp'] | ['ctl','exp','c']); armLabels maps
+// arm key -> display label; armMode ('both'|'A'|'B'|'C') optionally isolates one arm.
+function op_time_table(op, sop, armKeys, armLabels, timeRows, armMode?){
+  var shown = (armMode && armMode!=="both") ? armKeys.filter(function(a){ return LETTER[a]===armMode; }) : armKeys;
+  if (!shown.length) shown = [armKeys[0]];
+  var multi = shown.length>1;
+  // The download % is per-row context for the latency, not a compared metric here — show one
+  // value per arm, no delta columns (the real download comparison is in the download tables).
+  var dlOpts = {unit:"%", higherBetter:true, valuesOnly:true};
   var cols = ["download"].concat(MAIN_METRICS);
+  var span = function(m){ return m==="download" ? shown.length : 2*shown.length-1; };
   var out = ['<table class="tbl">'];
-  if (effDual){
+  // Every delta is baseline-relative (vs arm A). With >2 arms two bare "Δ" columns are
+  // ambiguous, so name the baseline; with 2 arms a single "Δ" is unambiguous. (The p-value
+  // rides in the cell, so the header drops it.)
+  var dhdr = shown.length>2 ? ('Δ vs '+esc(armLabels[shown[0]]||shown[0])) : 'Δ';
+  if (multi){
     out.push('<thead><tr><th class="l" rowspan="2">time</th>');
-    cols.forEach(function(m){ out.push('<th colspan="3" class="grp" data-metric="'+m+'">'+m+'</th>'); });
+    cols.forEach(function(m){ out.push('<th colspan="'+span(m)+'" class="grp" data-metric="'+m+'">'+m+'</th>'); });
     out.push('</tr><tr>');
     cols.forEach(function(m){
-      out.push('<th class="grpl" data-metric="'+m+'">'+esc(la)+'</th><th data-metric="'+m+'">'+esc(lb)+'</th><th data-metric="'+m+'">Δ (p)</th>');
+      shown.forEach(function(a,i){
+        out.push('<th'+(i===0?' class="grpl"':'')+' data-metric="'+m+'">'+esc(armLabels[a]||a)+'</th>');
+        if (i>0 && m!=="download") out.push('<th data-metric="'+m+'">'+dhdr+'</th>');
+      });
     });
     out.push('</tr></thead><tbody>');
   } else {
-    var lab = singleArm==="exp" ? lb : la;
+    var lab = armLabels[shown[0]] || shown[0];
     out.push('<thead><tr><th class="l">time</th>');
-    cols.forEach(function(m){ out.push('<th data-metric="'+m+'">'+m+(dual?' <span class="muted">('+esc(lab)+')</span>':'')+'</th>'); });
+    cols.forEach(function(m){ out.push('<th data-metric="'+m+'">'+m+(armKeys.length>1?' <span class="muted">('+esc(lab)+')</span>':'')+'</th>'); });
     out.push('</tr></thead><tbody>');
   }
   timeRows.forEach(function(row){
     var stageId = (row.t != null ? row.t : row.special);
     out.push('<tr><td class="l stage">'+esc(row.label)+'</td>');
-    out.push(_group_cells(_dl_cell(sop, row), effDual, op, "download", stageId, singleArm, dlOpts));
+    out.push(_group_cells(_dl_cell(sop, row, shown), op, "download", stageId, dlOpts));
     MAIN_METRICS.forEach(function(metric){
-      out.push(_group_cells(_time_cell(sop, metric, row), effDual, op, metric, stageId, singleArm));
+      out.push(_group_cells(_time_cell(sop, metric, row, shown), op, metric, stageId));
     });
     out.push('</tr>');
   });
@@ -178,98 +217,93 @@ function prov_table(ctx){
   out.push('</tbody></table>');
   return out.join("");
 }
-// ---- Shared A/B/Δ/Δ%/p table scaffolding (throughput / progress / distribution) ----
+// ---- Shared N-arm download-table scaffolding (throughput / progress / distribution) ----
 // These three download tables share a header + row shape; only the value formatting, the
-// good-delta direction, and the row labels differ. `_dlHead` builds the opening; `_dlRow`
-// renders one row given a descriptor (see the callers below).
-function _dlHead(title, both, la, lb, armMode, valSuffix, deltaLabel){
-  var out = '<table class="tbl dlt">'+_dlcols(both)+'<thead><tr><th class="l">'+title+'</th>';
-  if (both) out += '<th>'+esc(la)+valSuffix+'</th><th>'+esc(lb)+valSuffix+'</th><th>'+deltaLabel+'</th><th>Δ%</th><th>p</th>';
-  else out += '<th>'+esc(armMode === 'A' ? la : lb)+valSuffix+'</th>';
+// good-delta direction, and the row labels differ. Columns interleave like the latency tables:
+// A | B | Δ(A-B) | C | Δ(A-C), each delta a self-describing "−12% (−8s, p=.34)" cell.
+// The arms actually shown (all, or one when armMode isolates it).
+function _dlShown(ctx, armMode){
+  var armKeys = ctx.armKeys || ["ctl"].concat(ctx.dual ? ["exp"] : []);
+  var shown = (armMode && armMode !== 'both') ? armKeys.filter(function(a){ return LETTER[a]===armMode; }) : armKeys;
+  if (!shown.length) shown = [armKeys[0]];
+  return {armKeys:armKeys, shown:shown};
+}
+// Shared fixed widths so the columns line up across the three stacked tables. n = shown arms;
+// layout is label + per arm (value, plus a delta for every arm past the baseline).
+function _dlcols(n){
+  if (n <= 1) return '<colgroup><col style="width:27%"><col></colgroup>';
+  var valW = n>=3?13:20, delW = n>=3?18:38, g = '<colgroup><col style="width:22%">';
+  for (var i=0;i<n;i++){ g += '<col style="width:'+valW+'%">'; if (i>0) g += '<col style="width:'+delW+'%">'; }
+  return g + '</colgroup>';
+}
+function _dlHead(title, shown, labels, valSuffix){
+  // Name the baseline in the Δ header when >2 arms (two bare "Δ"s would be ambiguous).
+  var dhdr = shown.length>2 ? ('Δ vs '+esc(labels[shown[0]]||shown[0])) : 'Δ';
+  var out = '<table class="tbl dlt">'+_dlcols(shown.length)+'<thead><tr><th class="l">'+title+'</th>';
+  shown.forEach(function(a,i){ out += '<th>'+esc(labels[a]||a)+valSuffix+'</th>'; if (i>0) out += '<th>'+dhdr+'</th>'; });
   return out + '</tr></thead><tbody>';
 }
-// o: {label, both, armMode, a, aStd, b, bStd, nCtl, nExp, d, dpct, p, goodPos,
-//     fmtVal(v,sd,n)->cell, deltaVal(d)->str, deltaUnit}
-function _dlRow(o){
-  if (!o.both){
-    var one = o.armMode === 'A' ? o.fmtVal(o.a, o.aStd, o.nCtl) : o.fmtVal(o.b, o.bStd, o.nExp);
-    return '<tr><td class="l stage">'+o.label+'</td><td>'+one+'</td></tr>';
-  }
-  var p = o.p, sig = (!isnan(p) && p < ALPHA);
-  var a = o.fmtVal(o.a, o.aStd, o.nCtl), b = o.fmtVal(o.b, o.bStd, o.nExp);
-  var dcell, dpctc;
-  if (o.d === null || o.d === undefined){ dcell = "–"; dpctc = "–"; }
-  else {
-    var improved = o.goodPos ? (o.d > 0) : (o.d < 0);
-    var vr = improved ? "--good" : "--bad";
-    dcell = '<span style="color:var('+vr+')">'+o.deltaVal(o.d)+'</span>'+(o.deltaUnit || "");
-    dpctc = '<span style="color:var('+vr+')">'+_pct(o.dpct)+'</span>';
-  }
-  var pcell;
-  if (isnan(p)) pcell = "–";
-  else { var ptxt = p >= 1e-4 ? _g2(p) : _e0(p);
-    pcell = sig ? '<span class="psig">'+ptxt+'</span>' : '<span class="pns">'+ptxt+'</span>'; }
-  // Dim only the difference columns (Δ / Δ% / p) when not significant; the A/B values stay lit.
-  var dc = sig ? "" : ' class="dim"';
-  return '<tr><td class="l stage">'+o.label+'</td><td>'+a+'</td><td>'+b+'</td><td'+dc+'>'+dcell
-       + '</td><td'+dc+'>'+dpctc+'</td><td class="pcol'+(sig?"":" dim")+'">'+pcell+'</td></tr>';
+// One collapsed download delta cell: relative Δ% (colored) + (abs delta, p) parenthetical.
+// `d` = {d, dpct, p}. Dims when not significant.
+function _dlDelta(d, goodPos, deltaVal, deltaUnit){
+  var p = d.p, sig = (!isnan(p) && p < ALPHA), dc = ' class="dcell'+_dimClass(p)+'"';
+  if (d.d === null || d.d === undefined) return '<td'+dc+'>–</td>';
+  var vr = (goodPos ? (d.d > 0) : (d.d < 0)) ? "--good" : "--bad";
+  var absStr = deltaVal(d.d) + (deltaUnit || "");
+  var pcls = sig ? "psig" : "pns", pTxt = isnan(p) ? "" : ("p=" + _p2(p));
+  var sub = '(' + absStr + (pTxt ? (', <span class="'+pcls+'">'+pTxt+'</span>') : '') + ')';
+  return '<td'+dc+'><span class="dval" style="color:var('+vr+')">'+_pct(d.dpct)+'</span><span class="dsub">'+sub+'</span></td>';
 }
-// Elapsed to reach each download % per arm. 'both' shows A|B|Δ|Δ%|p; a single arm shows
-// just that arm's elapsed. Less time is better (negative Δ green).
+// o: {label, arms:[{v,std,n}], cmp:[{d,dpct,p}], goodPos, fmtVal(v,sd,n)->cell, deltaVal(d)->str, deltaUnit}
+function _dlRow(o){
+  var cells = "";
+  for (var i=0;i<o.arms.length;i++){ var A = o.arms[i];
+    cells += '<td>'+o.fmtVal(A.v, A.std, A.n)+'</td>';
+    if (i>0) cells += _dlDelta(o.cmp[i-1], o.goodPos, o.deltaVal, o.deltaUnit);
+  }
+  return '<tr><td class="l stage">'+o.label+'</td>'+cells+'</tr>';
+}
+// Filter an analyze row ({arms,cmp} over ALL arms) down to the shown arms: all -> as-is; a
+// single isolated arm -> just its value, no deltas.
+function _dlPick(row, armKeys, shown){
+  if (shown.length === armKeys.length) return {arms:row.arms, cmp:row.cmp};
+  var j = armKeys.indexOf(shown[0]);
+  return {arms:[row.arms[j]], cmp:[]};
+}
+// Elapsed to reach each download %, per arm + each non-baseline arm's Δ vs A. Less time is
+// better (negative Δ green).
 function time_to_stall_table(ctx, armMode?){
   if (!ctx.time_to_stall.length) return "";
-  var la = ctx.control_label, lb = ctx.experiment_label;
-  var solo = !ctx.dual, both = !solo && (armMode === undefined || armMode === 'both'), mode = solo ? 'A' : armMode;
+  var S = _dlShown(ctx, armMode);
   var secCell = function(v, sd, n){ if (v === null || v === undefined) return "–";
     var s = (n > 1) ? '<span class="sd">±'+(sd||0).toFixed(0)+'</span>' : "";
     return '<span class="pval">'+v.toFixed(0)+'</span><span class="unit">s</span>'+s; };
-  var out = [_dlHead("Progress", both, la, lb, mode, " elapsed", "Δ s")];
-  ctx.time_to_stall.forEach(function(r){
-    out.push(_dlRow({label:r.pct+'%', both:both, armMode:mode,
-      a:r.a, aStd:r.a_std, b:r.b, bStd:r.b_std, nCtl:ctx.n_ctl, nExp:ctx.n_exp,
-      d:r.dsec, dpct:r.dpct, p:r.p, goodPos:false,
-      fmtVal:secCell, deltaVal:function(d){return _sms(d);}, deltaUnit:""}));
+  var out = [_dlHead("Progress", S.shown, ctx.labels, " elapsed")];
+  ctx.time_to_stall.forEach(function(r){ var pk = _dlPick(r, S.armKeys, S.shown);
+    out.push(_dlRow({label:r.pct+'%', arms:pk.arms, cmp:pk.cmp, goodPos:false,
+      fmtVal:secCell, deltaVal:function(d){return _sms(d);}, deltaUnit:'<span class="unit">s</span>'}));
   });
   out.push('</tbody></table>');
   return out.join("");
 }
-// Download throughput (MB/s): avg + peak rows. More MB/s is better (positive Δ green). The
-// values are already per-node (mb_per_s is the cluster-wide free-space delta ALREADY divided
-// by #nodes — same source as the download chart's MB/s axis), so shown as-is; nd only picks
-// the unit wording.
+// Download throughput (MB/s): avg + peak rows. More MB/s is better (positive Δ green). Values
+// are already per-node (same source as the download chart's MB/s axis); nd only picks wording.
 function mbps_table(ctx, armMode?){
   if (!ctx.mbps_rows || !ctx.mbps_rows.length) return "";
-  var la = ctx.control_label, lb = ctx.experiment_label;
-  var solo = !ctx.dual, both = !solo && (armMode === undefined || armMode === 'both'), mode = solo ? 'A' : armMode;
+  var S = _dlShown(ctx, armMode);
   var nd = (ctx.nodes && ctx.nodes > 0) ? ctx.nodes : null;
-  var unit = 'MB/s', unitSpan = '<span class="unit">'+unit+'</span>';
-  // The rate is per-node; say so once on the row label ("avg MB/s" -> "avg MB/s/node")
-  // instead of repeating "/node" on every value cell.
+  var unitSpan = '<span class="unit">MB/s</span>';
   var rowLabel = function(lbl){ return esc(lbl) + ((nd && nd > 1) ? '/node' : ''); };
   var valCell = function(v, sd, n){ if (v === null || v === undefined) return "–";
     var s = (n > 1) ? '<span class="sd">±'+_num(sd||0)+'</span>' : "";
     return '<span class="pval">'+_num(v)+'</span>'+unitSpan+s; };
-  var out = [_dlHead("throughput", both, la, lb, mode, "", "Δ")];
-  ctx.mbps_rows.forEach(function(r){
-    out.push(_dlRow({label:rowLabel(r.label), both:both, armMode:mode,
-      a:r.a, aStd:r.a_std, b:r.b, bStd:r.b_std, nCtl:ctx.n_ctl, nExp:ctx.n_exp,
-      d:r.d, dpct:r.dpct, p:r.p, goodPos:true,
+  var out = [_dlHead("throughput", S.shown, ctx.labels, "")];
+  ctx.mbps_rows.forEach(function(r){ var pk = _dlPick(r, S.armKeys, S.shown);
+    out.push(_dlRow({label:rowLabel(r.label), arms:pk.arms, cmp:pk.cmp, goodPos:true,
       fmtVal:valCell, deltaVal:function(d){return _sms(d);}, deltaUnit:unitSpan}));
   });
   out.push('</tbody></table>');
   return out.join("");
-}
-
-// Progress-distribution summary: the "max delta" = each run's PEAK max−min remaining-bytes
-// spread across nodes (the worst node-skew moment), averaged per arm ±std, with the A/B
-// difference — computed here from the skew series (ctx.series), so analyze() is untouched.
-// Below the row, a link reveals the full distribution chart. Lower skew is better (green Δ).
-// Shared fixed column widths so the A/B/Δ/Δ%/p columns line up across the three stacked
-// download tables (throughput / progress / distribution), whose first-column labels differ.
-function _dlcols(both){
-  return both
-    ? '<colgroup><col style="width:27%"><col style="width:18%"><col style="width:18%"><col style="width:13%"><col style="width:13%"><col style="width:11%"></colgroup>'
-    : '<colgroup><col style="width:27%"><col></colgroup>';
 }
 function _mbUnit(vals){   // pick MB/GB/TB for a set of byte magnitudes
   var mx = 0; vals.forEach(function(v){ if (v != null && Math.abs(v) > mx) mx = Math.abs(v); });
@@ -277,9 +311,13 @@ function _mbUnit(vals){   // pick MB/GB/TB for a set of byte magnitudes
   if (mx >= 1024) return { unit: "GB", div: 1024 };
   return { unit: "MB", div: 1 };
 }
+// Progress-distribution summary: initial skew + each run's PEAK max−min remaining-bytes spread,
+// averaged per arm with each non-baseline arm's Δ vs A — computed here from the skew series
+// (ctx.series), so analyze() is untouched. Below the max-delta row, a link reveals the full chart.
 function pdist_table(ctx, armMode?){
   var s0 = ctx.series && (ctx.series.agg || (ctx.op_order && ctx.series[ctx.op_order[0]]));
   if (!s0 || !s0.rDeltaRuns) return "";
+  var S = _dlShown(ctx, armMode);
   var peaks = function(arm){
     var runs = s0.rDeltaRuns[arm] || [], out = [];
     runs.forEach(function(r){ if (!r || !r.length) return;
@@ -287,18 +325,6 @@ function pdist_table(ctx, armMode?){
       if (mx != null) out.push(mx); });
     return out;
   };
-  var cv = peaks("ctl"), ev = peaks("exp");
-  if (!cv.length && !ev.length) return "";
-  var cs = _summ(cv), es = _summ(ev);
-  var mw = (cv.length && ev.length) ? mann_whitney(cv, ev) : [NAN, NAN, "none"];
-  var d = (cs.mean != null && es.mean != null) ? es.mean - cs.mean : null;
-  var dpct = (d != null && cs.mean) ? d / cs.mean * 100.0 : null;
-  var la = ctx.control_label, lb = ctx.experiment_label;
-  var solo = !ctx.dual, both = !solo && (armMode === undefined || armMode === "both"), mode = solo ? 'A' : armMode;
-  var u = _mbUnit([cs.mean, es.mean, d]);
-  var valCell = function(v, sd, n){ if (v == null) return "–";
-    var s = (n > 1) ? '<span class="sd">±'+_num((sd||0)/u.div)+'</span>' : "";
-    return '<span class="pval">'+_num(v/u.div)+'</span><span class="unit">'+u.unit+'</span>'+s; };
   // Initial skew: at the FIRST sample, the across-node spread (max−min = rdelta) as a % of the
   // across-node mean (rmean), per run, averaged per arm. Captures how unevenly the download starts.
   var initSkew = function(arm){
@@ -312,26 +338,34 @@ function pdist_table(ctx, armMode?){
     }
     return o;
   };
-  var civ = initSkew("ctl"), eiv = initSkew("exp");
-  var cis = _summ(civ), eis = _summ(eiv);
-  var imw = (civ.length && eiv.length) ? mann_whitney(civ, eiv) : [NAN, NAN, "none"];
-  var id = (cis.mean != null && eis.mean != null) ? eis.mean - cis.mean : null;
-  var idpct = (id != null && cis.mean) ? id / cis.mean * 100.0 : null;
+  if (!S.armKeys.some(function(a){ return peaks(a).length; })) return "";
+  // Baseline-relative stats over the shown arms for a per-arm value fn.
+  var statN = function(fn){
+    var per = S.shown.map(function(a){ var v = fn(a); return {vals:v, s:_summ(v)}; });
+    var base = per[0], cmp = per.slice(1).map(function(e){
+      var mw = (base.vals.length && e.vals.length) ? mann_whitney(base.vals, e.vals) : [NAN, NAN, "none"];
+      var d = (base.s.mean!=null && e.s.mean!=null) ? e.s.mean-base.s.mean : null;
+      var dpct = (d!=null && base.s.mean) ? d/base.s.mean*100.0 : null;
+      return {d:d, dpct:dpct, p:mw[1]};
+    });
+    return {per:per, cmp:cmp};
+  };
+  var toArms = function(st){ return st.per.map(function(e){ return {v:e.s.mean, std:e.s.std, n:e.vals.length}; }); };
+  var mx = statN(peaks), sk = statN(initSkew);
+  var mags = []; mx.per.forEach(function(e){ mags.push(e.s.mean); }); mx.cmp.forEach(function(c){ mags.push(c.d); });
+  var u = _mbUnit(mags);
+  var valCell = function(v, sd, n){ if (v == null) return "–";
+    var s = (n > 1) ? '<span class="sd">±'+_num((sd||0)/u.div)+'</span>' : "";
+    return '<span class="pval">'+_num(v/u.div)+'</span><span class="unit">'+u.unit+'</span>'+s; };
   var pctCell = function(v, sd, n){ if (v == null) return "–";
     var s = (n > 1) ? '<span class="sd">±'+_num(sd||0)+'</span>' : "";
     return '<span class="pval">'+_num(v)+'</span><span class="unit">%</span>'+s; };
   var link = ' <a class="showgraph" data-pdist-show href="#" title="show the per-node distribution over time"></a>';
-  var out = [_dlHead("progress distribution", both, la, lb, mode, "", "Δ")];
-  out.push(_dlRow({label:'initial skew', both:both, armMode:mode,
-    a:cis.mean, aStd:cis.std, b:eis.mean, bStd:eis.std, nCtl:ctx.n_ctl, nExp:ctx.n_exp,
-    d:id, dpct:idpct, p:(imw[1] as number), goodPos:false,   // less starting skew is better
-    fmtVal:pctCell, deltaVal:function(dd){return _sms(dd);},
-    deltaUnit:'<span class="unit">%</span>'}));
-  out.push(_dlRow({label:'max delta'+link, both:both, armMode:mode,
-    a:cs.mean, aStd:cs.std, b:es.mean, bStd:es.std, nCtl:ctx.n_ctl, nExp:ctx.n_exp,
-    d:d, dpct:dpct, p:(mw[1] as number), goodPos:false,   // less node skew is better
-    fmtVal:valCell, deltaVal:function(dd){return _sms(dd/u.div);},
-    deltaUnit:'<span class="unit">'+u.unit+'</span>'}));
+  var out = [_dlHead("progress distribution", S.shown, ctx.labels, "")];
+  out.push(_dlRow({label:'initial skew', arms:toArms(sk), cmp:sk.cmp, goodPos:false,   // less starting skew is better
+    fmtVal:pctCell, deltaVal:function(dd){return _sms(dd);}, deltaUnit:'<span class="unit">%</span>'}));
+  out.push(_dlRow({label:'max delta'+link, arms:toArms(mx), cmp:mx.cmp, goodPos:false,   // less node skew is better
+    fmtVal:valCell, deltaVal:function(dd){return _sms(dd/u.div);}, deltaUnit:'<span class="unit">'+u.unit+'</span>'}));
   out.push('</tbody></table>');
   return out.join("");
 }

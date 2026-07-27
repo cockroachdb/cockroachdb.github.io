@@ -55,6 +55,9 @@ export interface Arm {
   ts: string | null;
   /** 'a'/'b' (metadata.arm), else null. */
   ab: string | null;
+  /** slot index in the current comparison (0=A/ctl, 1=B/exp, 2=C), set by the selector so the
+   *  renderer can color each arm by slot regardless of how many lower slots are empty. */
+  role?: number;
   sha?: string | null;
   dirty?: boolean;
   /** the set's --start-setting map; the report diffs the chosen pair itself. */

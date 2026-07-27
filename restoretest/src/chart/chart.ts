@@ -69,10 +69,16 @@ export function runChart(RC){
 (function(){
  var D=RC.chartData;
  var LAB=RC.labels||{ctl:'A',exp:'B'};
- var VAR={ctl_p50:'--ctl-p50',ctl_p95:'--ctl-p95',ctl_p99:'--ctl-p99',
-          exp_p50:'--lh-p50',exp_p95:'--lh-p95',exp_p99:'--lh-p99'};
- var ARMS=['ctl','exp'];
+ // Arms to draw, in slot order, from analyze: ['ctl'] | ['ctl','exp'] | ['ctl','exp','c'].
+ var ARMS=RC.armKeys||['ctl','exp'];
+ // Arm key -> CSS color-family prefix (ctl=orange, exp=blue "lh", c=magenta) + role letter.
+ var FAM={ctl:'ctl',exp:'lh',c:'c'};
+ var LETTER={ctl:'A',exp:'B',c:'C'};
+ function COL(a,sh){return 'var(--'+(FAM[a]||'ctl')+'-'+sh+')';}   // e.g. COL('exp','p95')
  var PMETS=['p50','p95','p99'];
+ // "<arm>_<metric>" -> css var NAME (no var()), for the polygon/line fills that read VAR[k].
+ var VAR:any={};
+ ARMS.forEach(function(a){PMETS.forEach(function(m){VAR[a+'_'+m]='--'+(FAM[a]||'ctl')+'-'+m;});});
  var XMAX=RC.xmaxEl||1;
  // Fixed elapsed upper bound for both the latency and progress charts: the max sampled
  // elapsed across all runs/arms (i.e. the last post-completion steady-state reading).
@@ -104,9 +110,16 @@ export function runChart(RC){
  // Seed the sticky controls from a persisted slug (RC.ctrl0 holds only non-default
  // overrides). Re-applied on every runChart run so control state survives arm re-renders.
  if(RC.ctrl0) for(var _ck in RC.ctrl0){ if(_ck in state) state[_ck]=RC.ctrl0[_ck]; }
+ // A persisted armMode may name an arm no longer present (e.g. 'C' after arm C was removed);
+ // fall back to showing all so nothing renders blank.
+ if(state.armMode!=='both' && ARMS.map(function(a){return LETTER[a];}).indexOf(state.armMode)<0) state.armMode='both';
+ // With 3+ arms the tables can't fit multiple percentiles' worth of columns, so the percentile
+ // controls act as a radio (one metric at a time) and default to p99.
+ var threeUp=ARMS.length>=3;
+ if(threeUp && PMETS.filter(function(m){return state[m];}).length!==1){ state.p50=false; state.p95=false; state.p99=true; }
  // Called by the control handlers to push the current sticky state up to the slug.
  function persistCtrl(){ if(RC.persistCtrl) RC.persistCtrl(state); }
- function armOn(a){return a==='ctl' ? state.armMode!=='B' : state.armMode!=='A';}
+ function armOn(a){ return state.armMode==='both' || state.armMode===LETTER[a]; }
  // Effective run index for arm `a`'s cursor readout: a hovered/pinned run isolates its own
  // arm (label that run; 'skip' suppresses the other arm's dot), else null (=> the mean line).
  // The cursor at()/head() closures consult this so hovering a run line relabels the cursor to
@@ -180,7 +193,7 @@ export function runChart(RC){
    // With both arms shown, the download overlay (right axis + curve + milestones)
    // is ambiguous per-arm and lives instead in the dedicated A/B download chart in
    // the Duration section — so drop it from the latency plots and reclaim the width.
-   var multiArm = RC.dual && armOn('ctl') && armOn('exp');
+   var multiArm = ARMS.filter(function(a){return armOn(a);}).length>1;
    // Reserve the right axis for: the download context (single-arm), or the qps overlay
    // in A/B (where there's no download axis and qps gets a labeled scale). Single-arm
    // qps rides the same reserved gutter with no ticks, so no extra width is needed.
@@ -298,7 +311,7 @@ export function runChart(RC){
      // here is % *un*downloaded, so the line is at 0% there; the seconds carry the meaning.
      var mi=0;
      ARMS.forEach(function(a){ if(!armOn(a))return; var ce=meanComplete(a); if(ce==null||ce<xmin||ce>xmax)return;
-       var x=X(ce), col=a==='ctl'?'var(--ctl-p95)':'var(--lh-p95)';
+       var x=X(ce), col=COL(a,'p95');
        s.push('<line x1="'+x.toFixed(1)+'" y1="'+yt+'" x2="'+x.toFixed(1)+'" y2="'+yb+'" style="stroke:'+col+';opacity:0.4;stroke-dasharray:4 3"/>');
        s.push('<text class="mslab" x="'+x.toFixed(1)+'" y="'+(yb+16+mi*7)+'" text-anchor="middle" style="fill:'+col+'">'+Math.round(ce)+'s</text>');
        mi++;});
@@ -321,7 +334,7 @@ export function runChart(RC){
      if(state.plot==='all'){
        // All-runs: the individual run lines ARE the point, so draw them and skip the mean
        // line (the shells already convey the aggregate).
-       keys.forEach(function(k){var rs=(runsMap&&runsMap[k])||[], arm=k.slice(0,3);
+       keys.forEach(function(k){var rs=(runsMap&&runsMap[k])||[], arm=k.split('_')[0];
          rs.forEach(function(pl,ri){var c=clipPts(pl, xmin, xmax);if(c.length<2)return;
            var d=c.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Y(p.y).toFixed(1);}).join(' ');
            var key=arm+'#'+ri;   // arm + run index: same run tagged the same across all charts
@@ -353,7 +366,7 @@ export function runChart(RC){
          var qtx=x1+32;
          s.push('<text class="axtitle" transform="rotate(-90 '+qtx+' '+((yt+yb)/2)+')" x="'+qtx+'" y="'+((yt+yb)/2)+'" text-anchor="middle">qps</text>');
        }
-       ARMS.forEach(function(a){ if(!armOn(a))return; var col=a==='ctl'?'var(--ctl-p95)':'var(--lh-p95)';
+       ARMS.forEach(function(a){ if(!armOn(a))return; var col=COL(a,'p95');
          var drawq=function(arr,key){ if(!arr||!arr.length)return null;
            var c=clipPts(arr.map(function(p){return {x:p.x,y:qval(p)};}), xmin, xmax); if(c.length<2)return null;
            var d=c.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Yq(p.y).toFixed(1);}).join(' ');
@@ -384,7 +397,7 @@ export function runChart(RC){
      if(state.qps && qtop>0 && typeof Yq==='function'){
        ARMS.forEach(function(a){ if(!armOn(a))return;
          var qm=elapsed?meta.qpEl:meta.qpPc, qr=elapsed?meta.qpElRuns:meta.qpPcRuns;
-         cser.push({color:'var('+(a==='ctl'?'--ctl-p95':'--lh-p95')+')', y:Yq, fmt:rms, at:function(cxv){
+         cser.push({color:COL(a,'p95'), y:Yq, fmt:rms, at:function(cxv){
            var e=effRun(a); if(e==='skip')return null;
            if(e!=null){var arr=qr[a]&&qr[a][e];return arr?interp2(arr,cxv):null;}
            var pts=qm[a];return (pts&&pts.length)?interp(pts,cxv):null;}});
@@ -405,9 +418,14 @@ export function runChart(RC){
    // p99 end-labels (arm names).
    if(state.p99){var ep:any={};ARMS.forEach(function(a){if(!armOn(a))return;var pts=FS[a+'_p99'];if(!pts||!pts.length)return;
      var p=pts[pts.length-1];ep[a]=[X(p.x),Math.min(Math.max(Y(p.m),yt+6),yb-4)];});
-     if(ep.ctl&&ep.exp&&Math.abs(ep.ctl[1]-ep.exp[1])<10){
-       var h=ep.ctl[1]<=ep.exp[1]?'ctl':'exp',l=h==='ctl'?'exp':'ctl';
-       ep[l][1]=ep[h][1]+10;var ov=ep[l][1]-(yb-4);if(ov>0){ep[h][1]-=ov;ep[l][1]-=ov;}}
+     // Spread overlapping end-labels: sort by y, push each at least 10px below the previous,
+     // then if the stack overflows the bottom, shift the whole stack up to fit. Generalizes
+     // the old two-arm nudge to however many arms are shown.
+     var eord=Object.keys(ep).sort(function(a,b){return ep[a][1]-ep[b][1];});
+     for(var eoi=1;eoi<eord.length;eoi++){ var pv2=ep[eord[eoi-1]][1];
+       if(ep[eord[eoi]][1]-pv2<10) ep[eord[eoi]][1]=pv2+10; }
+     if(eord.length){ var eov=ep[eord[eord.length-1]][1]-(yb-4);
+       if(eov>0) eord.forEach(function(a){ep[a][1]-=eov;}); }
      ARMS.forEach(function(a){if(!ep[a])return;
        s.push('<text class="endlab" x="'+(ep[a][0]+4).toFixed(1)+'" y="'+(ep[a][1]+2).toFixed(1)+'" style="fill:var('+VAR[a+'_p99']+')">'+(LAB[a]||a)+' p99</text>');});}
    // Synced-cursor hit area + empty layer the mousemove handler fills (no rebuild).
@@ -441,7 +459,7 @@ export function runChart(RC){
    var elapsed=state.xmode==='elapsed';
    var W=760,H=320,x0=52,x1=650,yt=22,yb=284,lx=9;   // same size as the other charts; x1 leaves the MB/s gutter
    var cl=function(u){return u<0?0:u>100?100:u;};
-   var colOf={ctl:'var(--ctl-p95)',exp:'var(--lh-p95)'};
+   var colOf:any={}; ARMS.forEach(function(a){colOf[a]=COL(a,'p95');});
    // Comparing arms (more than one arm actually shown with data): keep a 100%-
    // completion diamond on each mean even in avg mode, so you can see which finished
    // first. Gated on data presence so a single-arm report doesn't count "exp" as on.
@@ -496,7 +514,7 @@ export function runChart(RC){
          s.push('<polygon class="dlband" points="'+top.concat(bot.reverse()).map(function(q){return q[0].toFixed(1)+','+q[1].toFixed(1);}).join(' ')+'" style="fill:'+color+';opacity:'+op+'"/>');});};
      // 100% completion is at downloaded 100 (top axis), x = each run's finish time.
      var inWin=function(v){return v>=xmin-1e-9 && v<=xmax+1e-9;};
-     drawArm=function(a){var runs=meta.dlRuns[a]||[], nr=runs.length, mean=meta.dl[a]||[];
+     drawArm=function(a,idx){var runs=meta.dlRuns[a]||[], nr=runs.length, mean=meta.dl[a]||[];
        if(state.plot==='all'){ if(mean.length>=2)band(mean,colOf[a]);   // shells, no mean line
          runs.forEach(function(pl,ri){curve(pl,colOf[a],'rln',a+'#'+ri);
          if(nr>1){var rc=crossEl(pl,100); if(rc!=null&&inWin(rc)) diamond(X(rc),Y(100),colOf[a]);}}); }
@@ -505,14 +523,14 @@ export function runChart(RC){
            // Mean completion (mean of the runs' 100% crossings): dimmed dashed vertical +
            // diamond at the 100% line + elapsed label. This sits left of where the
            // averaged curve visually reaches 100% (which lags to the slowest run); the
-           // mean is the typical finish. Label staggers down for the 2nd arm (A vs B).
+           // mean is the typical finish. Label staggers down per shown arm so they don't collide.
            s.push('<line x1="'+xc.toFixed(1)+'" y1="'+yt+'" x2="'+xc.toFixed(1)+'" y2="'+yb+'" style="stroke:'+colOf[a]+';opacity:0.4;stroke-dasharray:4 3"/>');
            diamond(xc,Y(100),colOf[a]);
-           var yoff=(multi&&a==='exp')?23:16;
+           var yoff=multi?16+idx*7:16;
            s.push('<text class="mslab" x="'+xc.toFixed(1)+'" y="'+(yb+yoff)+'" text-anchor="middle" style="fill:'+colOf[a]+'">'+Math.round(ce)+'s</text>');
          }} }
        if(mean.length){var mc=crossEl(mean,100), lxp=(mc!=null?Math.min(mc,xmax):null);
-         if(lxp!=null&&inWin(lxp)) s.push('<text class="endlab" x="'+(X(lxp)+4).toFixed(1)+'" y="'+(yt+8).toFixed(1)+'" style="fill:'+colOf[a]+'">'+(LAB[a]||a)+'</text>');}};
+         if(lxp!=null&&inWin(lxp)) s.push('<text class="endlab" x="'+(X(lxp)+4).toFixed(1)+'" y="'+(yt+8+idx*11).toFixed(1)+'" style="fill:'+colOf[a]+'">'+(LAB[a]||a)+'</text>');}};
    } else {
      // %-mode: elapsed (y) vs % downloaded (x). y-scale from the shown runs' finishes.
      xmin=0; xmax=100;
@@ -538,7 +556,7 @@ export function runChart(RC){
        if(top.length<2)return;
        s.push('<polygon class="dlband" points="'+top.concat(bot.reverse()).map(function(q){return q[0].toFixed(1)+','+q[1].toFixed(1);}).join(' ')+'" style="fill:'+color+';opacity:'+op+'"/>');});};
      // 100% completion is at x=100 (right edge), y = each run's finish time.
-     drawArm=function(a){var runs=meta.epRuns[a]||[], nr=runs.length, mean=meta.ep[a]||[];
+     drawArm=function(a,idx){var runs=meta.epRuns[a]||[], nr=runs.length, mean=meta.ep[a]||[];
        if(state.plot==='all'){ if(mean.length>=2)band(mean,colOf[a]);   // shells, no mean line
          runs.forEach(function(pl,ri){curve(pl,colOf[a],'rln',a+'#'+ri);
          if(nr>1){var lp=pl[pl.length-1]; if(lp) diamond(X(lp.x),Y(lp.y),colOf[a]);}}); }
@@ -552,7 +570,7 @@ export function runChart(RC){
    xticks();
    s.push('<text class="axtitle" x="'+((x0+x1)/2)+'" y="'+(H-4)+'" text-anchor="middle">'+xTitle+'</text>');
    s.push('<text class="axtitle" transform="rotate(-90 '+lx+' '+((yt+yb)/2)+')" x="'+lx+'" y="'+((yt+yb)/2)+'" text-anchor="middle">'+yTitle+'</text>');
-   ARMS.forEach(function(a){ if(armOn(a)) drawArm(a); });
+   var _si=0; ARMS.forEach(function(a){ if(armOn(a)){ drawArm(a,_si); _si++; } });
    // MB/s overlay on the reserved right axis: dashed mean + σ-shell band per arm (same
    // shell treatment as the latency plots). The source series is already per-node (the
    // test divides the cluster-wide free-space delta by #nodes), so values are plotted as-is.
@@ -573,7 +591,7 @@ export function runChart(RC){
      s.push('<text class="axtitle" transform="rotate(-90 '+(x1+30)+' '+((yt+yb)/2)+')" x="'+(x1+30)+'" y="'+((yt+yb)/2)+'" text-anchor="middle">'+mbTitle+'</text>');
      // Throughput uses the lighter (p50) arm shade so it reads distinctly from the
      // %-downloaded band/line (which uses the p95 shade), like p50 vs p99 on latency.
-     ARMS.forEach(function(a){ if(!armOn(a))return; var col=(a==='ctl'?'var(--ctl-p50)':'var(--lh-p50)');
+     ARMS.forEach(function(a){ if(!armOn(a))return; var col=COL(a,'p50');
        var runLine=function(pl,key){ var cc=clipPts(pl,xmin,xmax); if(cc.length<2)return;
          var d=cc.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Ymb(p.y).toFixed(1);}).join(' ');
          s.push('<path class="mbln'+(key!=null?' rln':'')+'"'+(key!=null?' data-run="'+key+'"':'')+' style="stroke:'+col+'" d="'+d+'"/>');
@@ -612,7 +630,8 @@ export function runChart(RC){
        if(mn&&mn.length){var q=interp(mn,cxv);if(q!=null)v=q;}});return v;};
      var pcAt=function(cxv){var v=null;ARMS.forEach(function(a){if(!armOn(a)||v!=null)return;
        var c=meta.dl[a];if(c){var q=interp2(c,cxv);if(q!=null)v=q;}});return v;};
-     var d0=elapsed?meta.dl[armOn('ctl')?'ctl':'exp']:meta.ep[armOn('ctl')?'ctl':'exp'];
+     var fa=ARMS.filter(function(a){return armOn(a);})[0]||'ctl';
+     var d0=elapsed?meta.dl[fa]:meta.ep[fa];
      var g0=(d0&&d0.length)?d0.map(function(p){return p.x;}):null;
      CURSORS['__dl__']={x0:x0,x1:x1,xmin:xmin,xmax:xmax,yt:yt,yb:yb,W:W,gridX:g0,series:cser,
        head:function(cxv){
@@ -661,7 +680,7 @@ export function runChart(RC){
    var axn=function(v){return v>=100?Math.round(v):Math.round(v*10)/10;};
    // Distinct shades per level (like latency's p50/p95/p99) so min/mean/max read apart:
    // min -> p50 (light), mean -> p99 (dark/bold via .ln), max -> p95 (mid). Ratio -> p95.
-   var shadeOf=function(a,sh){return 'var(--'+(a==='ctl'?'ctl':'lh')+'-'+sh+')';};
+   var shadeOf=function(a,sh){return COL(a,sh);};
    var tintOf=function(a){return shadeOf(a,'p50');};    // per-run min->max fill tint
    var ratioCol=function(a){return shadeOf(a,'p95');};  // y2 overlay
    var LV=[['Min','p50'],['Mean','p99'],['Max','p95']];
@@ -827,7 +846,7 @@ export function runChart(RC){
    var C=RC.ctx; if(!C)return;
    Object.keys(D).forEach(function(op){
      var box=document.querySelector('.optbl[data-op="'+op+'"]'); if(!box)return;
-     box.innerHTML=op_time_table(op, C.series[op], C.dual, C.control_label, C.experiment_label||"B", C.timeRows, state.armMode);
+     box.innerHTML=op_time_table(op, C.series[op], C.armKeys, C.labels, C.timeRows, state.armMode);
    });
    var dlt=document.querySelector('.dltbl'); if(dlt) dlt.innerHTML=download_tables(C, state.armMode);
  }
@@ -847,6 +866,7 @@ export function runChart(RC){
    // a body class so the top arm-bar chips can dim the hidden arm (the single arm control).
    document.body.classList.toggle('arm-a', state.armMode==='A');
    document.body.classList.toggle('arm-b', state.armMode==='B');
+   document.body.classList.toggle('arm-c', state.armMode==='C');
    var qb=document.querySelector('[data-qps]'); if(qb) qb.classList.toggle('on',state.qps);
    ['min','mean','max','ratio','delta'].forEach(function(w){var rb=document.querySelector('[data-remote-'+w+']'); if(rb) rb.classList.toggle('on',!!state['r'+w]);});
    PMETS.forEach(function(m){document.body.classList.toggle('hide-'+m,!state[m]);});
@@ -855,7 +875,7 @@ export function runChart(RC){
  }
  document.addEventListener('click',function(e){
    var b=(e.target as any).closest('[data-pct],[data-qps],[data-scale],[data-xmode],[data-plot],[data-remote-min],[data-remote-mean],[data-remote-max],[data-remote-ratio],[data-remote-delta]');if(!b)return;
-   if(b.dataset.pct){state[b.dataset.pct]=!state[b.dataset.pct];}
+   if(b.dataset.pct){ if(threeUp){PMETS.forEach(function(m){state[m]=(m===b.dataset.pct);});} else state[b.dataset.pct]=!state[b.dataset.pct]; }
    else if(b.dataset.plot){state.plot=b.dataset.plot;}   // summary | runs
    else if(b.hasAttribute('data-qps')){state.qps=!state.qps;}
    else if(b.hasAttribute('data-remote-min')){state.rmin=!state.rmin;}
@@ -924,11 +944,13 @@ export function runChart(RC){
  // ---- Drag-to-zoom (elapsed mode only): drag a horizontal band to set range ----
  var drag=null, clickTimer=null;
  function resetZoom(){ if(!isFull()){ state.range.start=0; state.range.end=XMAX; syncRange(); redraw(); } }
- // Cycle the arm(s) shown: A+B -> A -> B -> A+B (dual only). Shared by the control-bar arm
- // button and the on-plot double-click.
+ // Cycle the arm(s) shown: all -> A -> B -> (C ->) all, over the arms actually present.
+ // Shared by the on-plot double-click (the old control-bar arm button is gone).
  function cycleArm(){
-   if(!RC.dual) return;
-   state.armMode = state.armMode==='both'?'A':state.armMode==='A'?'B':'both';
+   if(ARMS.length<2) return;
+   var seq=['both'].concat(ARMS.map(function(a){return LETTER[a];}));
+   var i=seq.indexOf(state.armMode); if(i<0)i=0;
+   state.armMode=seq[(i+1)%seq.length];
    sync(); redraw(); refreshTables();
  }
  // Toggle the plot between summary (mean+band) and all-runs.

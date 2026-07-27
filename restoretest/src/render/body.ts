@@ -97,7 +97,7 @@ function render_body(ctx){
     A.push("<h3>"+esc(op_heading(op))+"</h3>");
     A.push("<div class='chart' data-op='"+esc(op)+"' data-big='"+(big?1:0)+"'>"
       + bake_svg(op, ctx.series[op], big) + "</div>");
-    A.push("<div class='optbl' data-op='"+esc(op)+"'>"+op_time_table(op, ctx.series[op], dual, cl, el || "B", ctx.timeRows)+"</div>");
+    A.push("<div class='optbl' data-op='"+esc(op)+"'>"+op_time_table(op, ctx.series[op], ctx.armKeys, ctx.labels, ctx.timeRows)+"</div>");
   });
 
   A.push("</div>");   // .dash

@@ -3,6 +3,7 @@
  --grid:#e8e7e1; --axis:#c3c2b7; --border:rgba(11,11,11,0.10);
  --ctl-p50:#f4a06f; --ctl-p95:#e8712f; --ctl-p99:#b4470f;
  --lh-p50:#86b6ef;  --lh-p95:#3987e5;  --lh-p99:#184f95;
+ --c-p50:#ef9fce;   --c-p95:#cf2a92;   --c-p99:#8f1a5f;
  --good:#006300; --bad:#c02a2a;
 }
 @media (prefers-color-scheme:dark){
@@ -11,6 +12,7 @@
   --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.12);
   --ctl-p50:#f4a06f; --ctl-p95:#e8712f; --ctl-p99:#b4470f;
   --lh-p50:#9ac1f2;  --lh-p95:#3987e5;  --lh-p99:#256abf;
+  --c-p50:#ef9fce;   --c-p95:#e14aa0;   --c-p99:#b83182;
   --good:#0ca30c; --bad:#e66767;
  }
 }
@@ -99,7 +101,7 @@ svg .pctlab{font-size:5.5px;fill:var(--muted);font-family:system-ui,sans-serif}
 .caveat{font-size:11px;color:var(--muted);margin:6px 2px 0}
 /* Gap between the stacked download tables (throughput / progress / distribution). */
 .tblgap{height:14px}
-/* Fixed layout + shared colgroup so the A/B/Δ/Δ%/p columns line up across those three tables. */
+/* Fixed layout + shared colgroup so the A | B | Δ columns line up across those three tables. */
 .tbl.dlt{table-layout:fixed}
 table.tbl{border-collapse:collapse;width:100%;font-size:12.5px;
  font-variant-numeric:tabular-nums;margin:2px 0}
@@ -115,12 +117,17 @@ table.tbl{border-collapse:collapse;width:100%;font-size:12.5px;
 .tbl th.grpl,.tbl td.grpl{border-left:2px solid var(--page)}
 .tbl .unit{color:var(--muted);font-size:9.5px;margin-left:1px}
 .tbl .sd{color:var(--muted);font-size:10.5px;margin-left:5px}
-/* A non-significant difference dims only the delta cells (Δ / Δ% / p), not the per-arm values. */
+/* Graded delta dimming by significance (only the delta cell dims, never the per-arm values):
+   full at p<=0.05, slightly faded when marginal (0.05<p<0.2), more faded when weak (p>=0.2). */
 .tbl td.dim{opacity:0.45}
+.tbl td.dim1{opacity:0.68}
+.tbl td.dim2{opacity:0.4}
 .tbl td.pcol{font-weight:500}
 .tbl td.dcell{white-space:nowrap}
 .tbl .pval{font-size:15px}
 .tbl .dval{font-size:15px;font-weight:700}
+/* The muted parenthetical (absolute delta + p) that trails the Δ% in the download tables. */
+.tbl .dsub{font-size:10.5px;color:var(--muted);margin-left:4px;white-space:nowrap}
 .tbl .pv{font-size:10.5px;margin-left:4px}
 .tbl .psig{color:var(--ink);font-weight:700}
 .tbl .pns{color:var(--bad);font-weight:600}
@@ -192,14 +199,17 @@ svg .selrect{fill:var(--ink2);opacity:0.12}
  cursor:pointer;color:var(--muted);background:var(--surface);opacity:0;transition:opacity .1s}
 .armchip:hover .armx{opacity:0.85}
 .armchip .armx:hover{opacity:1;background:var(--bad);color:#fff}
-/* Chosen arms are shaded in their comparison color (A=ctl, B=exp); once both are
-   chosen the rest dim, so it's visually clear one must be un-picked first. */
+/* Chosen arms are shaded in their comparison color (A=ctl, B=exp, C=third); once every
+   slot is full the rest dim, so it's visually clear one must be un-picked first. */
 .armchip.selA{background:color-mix(in srgb,var(--ctl-p99) 22%,var(--page));box-shadow:inset 0 0 0 1px var(--ctl-p99)}
 .armchip.selB{background:color-mix(in srgb,var(--lh-p99) 22%,var(--page));box-shadow:inset 0 0 0 1px var(--lh-p99)}
+.armchip.selC{background:color-mix(in srgb,var(--c-p99) 22%,var(--page));box-shadow:inset 0 0 0 1px var(--c-p99)}
 .armchip.dim{opacity:0.3}
 .armchip.dim .armpick{cursor:default}
-/* Dim the arm hidden by the current view (double-click cycles A / B / both). */
-body.arm-a .armchip.selB,body.arm-b .armchip.selA{opacity:0.4}
+/* Dim the arms hidden by the current view (double-click cycles all / A / B / C). When one arm
+   is isolated, fade every selected chip, then restore the active one to full opacity. */
+body.arm-a .armchip.sel,body.arm-b .armchip.sel,body.arm-c .armchip.sel{opacity:0.4}
+body.arm-a .armchip.selA,body.arm-b .armchip.selB,body.arm-c .armchip.selC{opacity:1}
 /* [+] compare tile: a dashed placeholder that opens the "add runsets" modal (paste link /
    import JSON / recently viewed). Greyed + non-opening at the catalog cap. */
 .armchip.armadd{border-style:dashed;background:transparent}
@@ -343,6 +353,7 @@ body.pd-open .showgraph::after{content:'hide graph \2197'}
 /* Non-sticky rule separating the Restore info section from the Workload Latency section. */
 hr.sec-sep{border:none;border-top:1px solid var(--border);margin:26px 0 2px}
 /* A solo arm renders positionally as ctl (orange). When the survivor of a comparison
-   is the slot-B arm, remap the ctl palette to the exp (blue) one so its color stays
-   stable — the report is otherwise the same single-arm view. */
+   is the slot-B (or slot-C) arm, remap the ctl palette to that slot's family so its
+   color stays stable — the report is otherwise the same single-arm view. */
 body.soloB{--ctl-p50:var(--lh-p50);--ctl-p95:var(--lh-p95);--ctl-p99:var(--lh-p99)}
+body.soloC{--ctl-p50:var(--c-p50);--ctl-p95:var(--c-p95);--ctl-p99:var(--c-p99)}
