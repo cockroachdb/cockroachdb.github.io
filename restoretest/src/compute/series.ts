@@ -110,9 +110,10 @@ function crossings_elapsed(runs){
   return out;
 }
 
-function build_series(op, ctl_runs, exp_runs, dual, el_grid, pct_grid){
+function build_series(op, ctl_runs, exp_runs, dual, el_grid, pct_grid, c_runs?){
   var arms = [["ctl", ctl_runs]];
   if (dual) arms.push(["exp", exp_runs]);
+  if (c_runs && c_runs.length) arms.push(["c", c_runs]);
   var el = {}, pc = {}, dl = {}, cr = {}, elRuns = {}, pcRuns = {}, dlRuns = {}, ep = {}, epRuns = {};
   // qps (per op) as its own mean + per-run series, elapsed and pct x — an optional
   // dashed overlay on the latency plots (its own scale, not ms).

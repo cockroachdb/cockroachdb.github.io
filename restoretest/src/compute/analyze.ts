@@ -53,6 +53,10 @@ function analyze(arms){
     exp_runs = loadArm(arms[1]);
     if (!exp_runs.length) throw new Error(noSamples("B", arms[1]));
   }
+  // Third arm (C): loaded for the plots (series) and timing markers only. The comparison
+  // math (cells/stats) still runs over ctl vs exp — arm C joins the tables in a later step.
+  var c_runs = arms.length > 2 ? loadArm(arms[2]) : [];
+  var hasC = c_runs.length > 0;
 
   var prov_ctl = arms[0], prov_exp = dual ? arms[1] : {settings:{}};
   var cl = arms[0].label || "A";
@@ -185,8 +189,19 @@ function analyze(arms){
       commit:(arm.commit||null), branch:(arm.branch||null),
       settings:filtered};
   }
-  var prov_details = [[cl, _arm_detail(prov_ctl, cl, "--ctl-p95")]];
-  if (dual) prov_details.push([el, _arm_detail(prov_exp, el, "--lh-p95")]);
+  // Hue per arm by its slot `role` (0=ctl/orange, 1=exp/blue, 2=C/magenta), tagged by the
+  // selector; falls back to position when a caller (e.g. the golden test) supplies no role.
+  var HUE95 = ["--ctl-p95", "--lh-p95", "--c-p95"];
+  function hueFor(arm, pos){ var r = (arm && arm.role != null) ? arm.role : pos; return HUE95[r] || HUE95[pos] || "--ctl-p95"; }
+  var prov_details = [[cl, _arm_detail(prov_ctl, cl, hueFor(arms[0], 0))]];
+  if (dual) prov_details.push([el, _arm_detail(prov_exp, el, hueFor(arms[1], 1))]);
+  // Third arm (C): for now it appears in the details table only — the comparison math and the
+  // plots still use arms[0] vs arms[1]. arms[2] contributes its provenance so the ribbon
+  // selection is reflected in the details table up top.
+  for (var ai = 2; ai < arms.length; ai++){
+    var alab = arms[ai].label || String.fromCharCode(65 + ai);
+    prov_details.push([alab, _arm_detail(arms[ai], alab, hueFor(arms[ai], ai))]);
+  }
 
   // ---- Timing (elapsed-to-stall) from crossings ----
   var stall_pcts = [50,90,100];
@@ -202,23 +217,35 @@ function analyze(arms){
     });
     return out;
   }
-  var timing = {ctl:_agg_timing(ctl_runs), exp:_agg_timing(exp_runs)};
+  var timing:any = {ctl:_agg_timing(ctl_runs), exp:_agg_timing(exp_runs)};
+  if (hasC) timing.c = _agg_timing(c_runs);   // arm C completion markers on the plots
 
-  // Elapsed-to-download-% per arm. Dual: A|B|Δ|Δ%|p. Solo: just the control arm's elapsed
-  // (single column) so the table still shows for one run set. Dual rows are unchanged.
+  // Per-arm run lists in slot order (ctl, then exp/c when present) — the download tables and
+  // their baseline-relative deltas iterate these.
+  var arm_run_lists = [ctl_runs];
+  if (dual) arm_run_lists.push(exp_runs);
+  if (hasC) arm_run_lists.push(c_runs);
+  // Baseline-relative pairwise stats over a set of per-arm value lists (arm 0 = baseline):
+  // per-arm summaries + {d,dpct,p} of each later arm vs the baseline (the same run-level MWU as
+  // the cells). Shared by the elapsed-to-% and MB/s download tables. Shape: {arms:[{v,std,n}], cmp}.
+  function _dlStatsN(perArmVals){
+    var per = perArmVals.map(function(v){ return {vals:v, s:_summ(v)}; });
+    var base = per[0];
+    var cmp = per.slice(1).map(function(e){
+      var mw = (base.vals.length && e.vals.length) ? mann_whitney(base.vals, e.vals) : [NAN, NAN, "none"];
+      var d = (base.s.mean!=null && e.s.mean!=null) ? e.s.mean-base.s.mean : null;
+      var dpct = (d!=null && base.s.mean) ? d/base.s.mean*100.0 : null;
+      return {d:d, dpct:dpct, p:mw[1]};
+    });
+    return {arms:per.map(function(e){ return {v:e.s.mean, std:e.s.std, n:e.vals.length}; }), cmp:cmp};
+  }
+  // Elapsed-to-download-% per arm. Each row: per-arm elapsed + each non-baseline arm's Δ vs A.
+  // A solo arm renders a single column; rows with no data at a % are dropped.
   var time_to_stall = [];
   stall_pcts.forEach(function(pct){
-    var ct = timing.ctl[pct], et = timing.exp[pct];
-    if (!dual){ if (ct.mean !== null) time_to_stall.push({pct:pct, a:ct.mean, a_std:ct.std, b:null, b_std:null, dsec:null, dpct:null, p:NAN}); return; }
-    var cv = _stall_elapsed(ctl_runs, pct), ev = _stall_elapsed(exp_runs, pct);
-    var mw = (cv.length && ev.length) ? mann_whitney(cv, ev) : [NAN, NAN, "none"];
-    var dsec = null, dpct = null;
-    if (ct.mean !== null && et.mean !== null){
-      dsec = et.mean - ct.mean;
-      if (ct.mean) dpct = dsec/ct.mean*100.0;
-    }
-    time_to_stall.push({pct:pct, a:ct.mean, a_std:ct.std, b:et.mean, b_std:et.std,
-      dsec:dsec, dpct:dpct, p:mw[1]});
+    var st = _dlStatsN(arm_run_lists.map(function(runs){ return _stall_elapsed(runs, pct); }));
+    if (st.arms.length===1 && st.arms[0].v===null) return;
+    time_to_stall.push({pct:pct, arms:st.arms, cmp:st.cmp});
   });
 
   // ---- Download throughput (MB/s): per-run avg & peak, with A/B stats ----
@@ -240,19 +267,12 @@ function analyze(arms){
   }
   var _vmean = function(xs){ var s=0; for (var i=0;i<xs.length;i++) s+=xs[i]; return xs.length?s/xs.length:null; };
   var _vmax = function(xs){ return xs.length ? Math.max.apply(null, xs) : null; };
-  // Dual: A|B|Δ|Δ%|p. Solo: just the control arm's avg/peak MB/s (single column). Dual unchanged.
+  // Per-arm avg/peak MB/s + each non-baseline arm's Δ vs A. Solo -> single column.
   var mbps_rows = [];
   [["avg MB/s", _vmean], ["peak MB/s", _vmax]].forEach(function(pr){
-    var cv = _mbps_per_run(ctl_runs, pr[1]);
-    var cs = _summ(cv);
-    if (!dual){ if (cs.mean !== null) mbps_rows.push({label:pr[0], a:cs.mean, a_std:cs.std, b:null, b_std:null, d:null, dpct:null, p:NAN}); return; }
-    var ev = _mbps_per_run(exp_runs, pr[1]);
-    var es = _summ(ev);
-    var mw = (cv.length && ev.length) ? mann_whitney(cv, ev) : [NAN, NAN, "none"];
-    var d = (cs.mean !== null && es.mean !== null) ? es.mean - cs.mean : null;
-    var dpct = (d !== null && cs.mean) ? d/cs.mean*100.0 : null;
-    mbps_rows.push({label:pr[0], a:cs.mean, a_std:cs.std, b:es.mean, b_std:es.std,
-      d:d, dpct:dpct, p:mw[1]});
+    var st = _dlStatsN(arm_run_lists.map(function(runs){ return _mbps_per_run(runs, pr[1]); }));
+    if (st.arms.length===1 && st.arms[0].v===null) return;
+    mbps_rows.push({label:pr[0], arms:st.arms, cmp:st.cmp});
   });
   // Nodes (from the test name, e.g. ".../nodes=5/...") so the table reports per-node
   // MB/s, matching the download chart's MB/s axis. null -> unknown -> cluster total.
@@ -260,7 +280,7 @@ function analyze(arms){
     var m = t && /nodes=(\d+)/.exec(t); if (m) return +m[1]; } return null; })();
 
   // ---- Plot series (dense) ----
-  var all_runs = ctl_runs.concat(exp_runs);
+  var all_runs = ctl_runs.concat(exp_runs).concat(c_runs);
   var max_el = 0.0, _elset = {};
   all_runs.forEach(function(run){ run.forEach(function(s){ if (s.el > max_el) max_el = s.el; _elset[s.el]=1; }); });
   // Grid = the actual sample elapsed times (union across runs), not a fixed step, so
@@ -271,7 +291,7 @@ function analyze(arms){
   var pct_grid = [];   // 0..100 step PCT_GRID_STEP (Python range(0, 102, 2))
   for (var pg=0; pg <= 100; pg += PCT_GRID_STEP) pct_grid.push(pg);
   var series = {};
-  OPS.forEach(function(op){ series[op] = build_series(op, ctl_runs, exp_runs, dual, el_grid, pct_grid); });
+  OPS.forEach(function(op){ series[op] = build_series(op, ctl_runs, exp_runs, dual, el_grid, pct_grid, c_runs); });
   var xmax_el = el_grid.length ? el_grid[el_grid.length-1]*1.0 : 1.0;
 
   // Time-anchored table rows: fixed elapsed points within the mean restore
@@ -285,7 +305,12 @@ function analyze(arms){
   // Chart payload + labels in the report's op order.
   var op_order = ["agg","stockLevel","orderStatus","delivery","newOrder","payment"];
   var chartData = {}; op_order.forEach(function(op){ chartData[op] = series[op]; });
-  var labels = {ctl:cl, exp:(el||"B")};
+  // labels stays {ctl,exp} for 1-2 arms (unchanged); the third label is added only when arm C
+  // is present. armKeys is the ordered list of arms the chart should draw. (armKeys is a
+  // display concern the frozen golden oracle predates — it's on the golden DROP list.)
+  var labels:any = {ctl:cl, exp:(el||"B")};
+  if (hasC) labels.c = arms[2].label || "C";
+  var armKeys = ["ctl"].concat(dual ? ["exp"] : []).concat(hasC ? ["c"] : []);
 
   return {
     cells:cells, order:order, dual:dual, control_label:cl, experiment_label:el,
@@ -296,7 +321,7 @@ function analyze(arms){
     timing:timing, time_to_stall:time_to_stall, mbps_rows:mbps_rows, nodes:nodes,
     series:series, xmax_el:xmax_el,
     refComplete:refComplete, timeRows:timeRows,
-    op_order:op_order, chartData:chartData, labels:labels,
+    op_order:op_order, chartData:chartData, labels:labels, armKeys:armKeys,
   };
 }
 
@@ -319,8 +344,11 @@ function data_json(ctx){
     out.timing[arm] = o;
   });
   ctx.time_to_stall.forEach(function(r){
-    out.time_to_stall.push({stall_pct:r.pct, a_elapsed_s:r.a, a_std_s:r.a_std, b_elapsed_s:r.b,
-      b_std_s:r.b_std, delta_s:r.dsec, delta_pct:r.dpct, exact_p:clean(r.p)});
+    // JSON keeps the baseline (A) + first comparand (B) shape; a third arm rides only the UI.
+    var a = r.arms[0], b = r.arms[1], c = r.cmp[0];
+    out.time_to_stall.push({stall_pct:r.pct, a_elapsed_s:a?a.v:null, a_std_s:a?a.std:null,
+      b_elapsed_s:b?b.v:null, b_std_s:b?b.std:null,
+      delta_s:c?c.d:null, delta_pct:c?c.dpct:null, exact_p:clean(c?c.p:NAN)});
   });
   ctx.order.forEach(function(k){
     var c = ctx.cells[k], st = c.stats;

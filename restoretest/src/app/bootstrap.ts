@@ -11,6 +11,8 @@ import { recordSets, listCards, getRunsFor, deleteSets, sortAndGroupCards, histo
 import { initSticky } from "../sticky";
 var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disabled (overflow via
                     // a sibling-arm add from the modal is still allowed — the cap gates opening)
+var MAX_ARMS = 3;   // how many run sets can be compared at once (A / B / C). The selector fills
+                    // this many slots; the renderer colors each by its slot role (see SEL below).
 (function(){
 
  // Unicode-safe base64url of the arms JSON. NOTE: very large multi-run payloads
@@ -132,14 +134,15 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
  // Run-trace hover (bold one run across all charts + cursor readout) now lives with the
  // rest of the chart pointer interaction in chart/chart.ts.
 
- // ---- arm catalog (any number of arms) + selector (pick 1 to view, 2 to compare) ----
- // The injected/hash payload is a CATALOG of all bundled arms. The rendering path only
- // ever handles 1-2 arms whose color roles are positional (arms[0]->ctl/orange,
- // arms[1]->exp/blue), so a thin selector picks 1-2 catalog entries and feeds the
- // unchanged renderReport. CATALOG holds the full set; SEL is a fixed [slotA, slotB]
- // pair of catalog indices (null = empty). Slots are stable: un-picking one keeps the
- // other in place (so a partner arm doesn't change color mid-comparison).
- var CATALOG=null, SEL=[null,null];
+ // ---- arm catalog (any number of arms) + selector (pick 1 to view, up to MAX_ARMS to compare) ----
+ // The injected/hash payload is a CATALOG of all bundled arms. A thin selector picks up to
+ // MAX_ARMS catalog entries and feeds renderReport. CATALOG holds the full set; SEL is a
+ // fixed-length [slotA, slotB, slotC] array of catalog indices (null = empty). Color roles are
+ // positional by SLOT: slot 0 -> ctl/orange (A), slot 1 -> exp/blue (B), slot 2 -> C/magenta.
+ // Slots are stable: un-picking one keeps the others in place (so a partner arm doesn't change
+ // color mid-comparison). Each rendered arm carries its slot index as `role` so the details
+ // table / chart color it by slot regardless of how many lower slots are empty.
+ var CATALOG=null, SEL=new Array(MAX_ARMS).fill(null);
  // esc is imported from ../format/format (shared HTML-escaper; also escapes ').
  var MON=['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
  // Parse an arm's yymmdd-HHMMSS stamp into display components; fall back to `name` if
@@ -172,24 +175,37 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
  // Average restore-completion time (avg time-to-100% download over the set's runs) is shared
  // with the recently-viewed card via avgTimeTo100 (imported from ./history); fmtDur lives in
  // ../format/format.
- // Build the 1-2 arms to render from the slot pair: clone (so the catalog survives),
- // and set each arm's display label to its minimal name for this pair. Settings stay
- // raw — CORE diffs the pair itself. Order is [slotA, slotB] with empty slots dropped,
- // so the surviving arm of a partial selection renders solo.
- function armsForSelection(){
-   var chosen=[SEL[0],SEL[1]].filter(function(x){return x!=null;})
-     .map(function(i){return CATALOG[i];}).filter(Boolean);
-   if(!chosen.length) chosen=[CATALOG[0]];
-   var names=labelArms(chosen);
-   return chosen.map(function(a,i){ var c=Object.assign({},a); c.label=names[i]; return c; });
+ // Build the arms to render from the slots: clone (so the catalog survives), set each arm's
+ // display label to its minimal name for this selection, and tag it with `role` = its slot
+ // index (0=A/orange, 1=B/blue, 2=C/magenta) so the renderer colors it by slot even when lower
+ // slots are empty. Settings stay raw — CORE diffs the arms itself. Order is [slotA, slotB,
+ // slotC] with empty slots dropped, so the surviving arm(s) of a partial selection render in
+ // slot order.
+ // Default slot selection for a freshly-loaded catalog of n sets: auto-compare when n is
+ // small enough to show all at once (2 -> A|B, 3 -> A|B|C), else show the first set solo
+ // (a large catalog shouldn't silently render three arms).
+ function defaultSel(n){
+   var sel=new Array(MAX_ARMS).fill(null);
+   if(n>=2 && n<=MAX_ARMS){ for(var i=0;i<n;i++) sel[i]=i; }
+   else { sel[0]=0; }
+   return sel;
  }
+ function armsForSelection(){
+   var chosen=[];
+   for(var s=0;s<SEL.length;s++){ if(SEL[s]!=null && CATALOG[SEL[s]]) chosen.push({arm:CATALOG[SEL[s]], role:s}); }
+   if(!chosen.length) chosen=[{arm:CATALOG[0], role:0}];
+   var names=labelArms(chosen.map(function(c){return c.arm;}));
+   return chosen.map(function(c,i){ var a=Object.assign({},c.arm); a.label=names[i]; a.role=c.role; return a; });
+ }
+ var ROLE_CLS=['A','B','C'];
  function armBarHTML(){
    var sets=CATALOG||[];
    var multi=sets.length>=2;   // <2: nothing to pick/compare/remove — just the arm + share
-   var names=sets.length?labelArms(sets):[], bothFull=(SEL[0]!=null&&SEL[1]!=null);
+   var filled=SEL.filter(function(x){return x!=null;}).length;
+   var names=sets.length?labelArms(sets):[], allFull=(filled>=MAX_ARMS);
    var chips=sets.map(function(a,i){
-     var role=(SEL[0]===i?0:SEL[1]===i?1:-1), dim=(multi&&bothFull&&role<0);
-     var cls='armchip'+(role>=0?(' sel sel'+(role===0?'A':'B')):'')+(dim?' dim':'');
+     var role=SEL.indexOf(i), dim=(multi&&allFull&&role<0);
+     var cls='armchip'+(role>=0?(' sel sel'+ROLE_CLS[role]):'')+(dim?' dim':'');
      // Bold the arm's short (report) name; when it doesn't already carry the date (a
      // same-day catalog shows just the time), prefix the date as lighter context.
      var date=armTsFields(a).date, short=names[i], nameHtml;
@@ -229,15 +245,19 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
  // we clear the report and show just the picker.
  function renderView(){
    if(CATALOG && CATALOG.length===1){       // nothing to pick — just show the lone arm
-     SEL=[0,null];
+     SEL=[0,null,null];
      renderReport(armsForSelection());
-   } else if(SEL[0]==null && SEL[1]==null){
+   } else if(SEL.every(function(x){return x==null;})){
      document.body.className='';
-     document.body.innerHTML='<p class="armempty">Nothing selected — pick an arm to view, or two to compare.</p>';
+     document.body.innerHTML='<p class="armempty">Nothing selected — pick an arm to view, or up to '+MAX_ARMS+' to compare.</p>';
    } else {
      renderReport(armsForSelection());
-     // Survivor of a comparison that sits in slot B keeps the blue (exp) palette.
-     if(SEL[0]==null && SEL[1]!=null) document.body.classList.add('soloB');
+     // A lone survivor whose lowest-filled slot is B or C keeps that slot's palette (the
+     // renderer draws the baseline arm as ctl/orange positionally; remap so its color stays
+     // stable). Only meaningful for a single-arm view — multi-arm coloring is role-based.
+     var firstSlot=SEL.findIndex(function(x){return x!=null;});
+     if(firstSlot===1) document.body.classList.add('soloB');
+     else if(firstSlot===2) document.body.classList.add('soloC');
    }
    var bar=armBarHTML();
    // Prepend the arm bar to the whole .report (NOT the short .details section): position:sticky
@@ -263,19 +283,19 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
    renderView();
  }
  // Chip click: the × removes the arm; the body fills the first empty slot (clicking a
- // selected chip un-picks it, down to empty). With both slots full the rest are greyed —
- // un-pick before swapping, which keeps the surviving partner in its slot/color.
+ // selected chip un-picks it, down to empty). With every slot full the rest are greyed —
+ // un-pick before swapping, which keeps the surviving partners in their slot/color.
  document.addEventListener('click',function(e:any){
    var rm=e.target.closest&&e.target.closest('[data-armremove]');
    if(rm){ e.preventDefault(); removeArm(+rm.getAttribute('data-armremove')); return; }
    var pick=e.target.closest&&e.target.closest('[data-armpick]'); if(!pick)return;
    e.preventDefault();
    var i=+pick.getAttribute('data-armpick');
-   var pos=(SEL[0]===i?0:SEL[1]===i?1:-1);
-   if(pos>=0){ SEL[pos]=null; }
-   else if(SEL[0]==null){ SEL[0]=i; }
-   else if(SEL[1]==null){ SEL[1]=i; }
-   else { return; }                        // both full -> greyed; ignore until an un-pick
+   var pos=SEL.indexOf(i);
+   if(pos>=0){ SEL[pos]=null; }             // un-pick
+   else { var free=SEL.indexOf(null);
+     if(free<0) return;                      // all slots full -> greyed; ignore until an un-pick
+     SEL[free]=i; }
    renderView();
  });
 
@@ -321,9 +341,9 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
    var before=(CATALOG||[]).length;
    CATALOG=runsToSets(catalogToRuns(CATALOG||[]).concat(fresh));
    REF=null;   // catalog changed -> any prior share id is stale; re-inline until re-shared
-   if(before===0){ SEL = CATALOG.length>=2?[0,1]:[0,null]; }
-   else if(CATALOG.length>before){ var bi=before;
-     if(SEL[0]==null) SEL[0]=bi; else if(SEL[1]==null) SEL[1]=bi; }
+   if(before===0){ SEL = defaultSel(CATALOG.length); }
+   else if(CATALOG.length>before){ var bi=before, free=SEL.indexOf(null);
+     if(free>=0) SEL[free]=bi; }
    recordSets(CATALOG).then(refreshRecent);   // remember the newly-added sets, refresh the cache
    return true;
  }
@@ -638,7 +658,7 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
    // CRDB node count (from the test name, e.g. ".../nodes=5/...") so the download chart can
    // show per-node MB/s. analyze() already derives it onto ctx.nodes. null -> unknown ->
    // show cluster-total MB/s.
-   runChart({chartData:ctx.chartData, labels:ctx.labels, dual:ctx.dual, xmaxEl:ctx.xmax_el, ctx:ctx, nodes:ctx.nodes, ctrl0:CTRL, persistCtrl:persistCtrl});
+   runChart({chartData:ctx.chartData, labels:ctx.labels, armKeys:ctx.armKeys, dual:ctx.dual, xmaxEl:ctx.xmax_el, ctx:ctx, nodes:ctx.nodes, ctrl0:CTRL, persistCtrl:persistCtrl});
    initSticky();   // measure the sticky-header offset + set the graph's stuck state for this render
  }
 
@@ -653,7 +673,7 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
  // the add-runsets modal open so the first action is right there. Any shared-load error surfaces
  // above the ribbon.
  function renderEmpty(){
-   CATALOG=[]; SEL=[null,null]; REF=null;
+   CATALOG=[]; SEL=new Array(MAX_ARMS).fill(null); REF=null;
    document.body.className='';
    document.body.innerHTML="<div class='report'><p class='armempty'>"
      +(LOADERR?esc(LOADERR):'No run set loaded — add one to get started.')+"</p></div>";
@@ -675,8 +695,8 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
    refreshRecent();   // prime the recently-viewed cache once at load (fills any modal we auto-open)
    // Priority: (1) injected window.__ARMS__ -> (2) URL hash -> (3) file picker. The payload
    // is a bare run array (launcher / roachtest / test), {runs, sel, ctrl} once the report has
-   // round-tripped it (sel = the persisted [slotA, slotB] selection), or a {ref, sel, ctrl}
-   // share slug whose runs live in the link store.
+   // round-tripped it (sel = the persisted [slotA, slotB, slotC] selection), or a {ref, sel,
+   // ctrl} share slug whose runs live in the link store.
    var raw=null;
    if(window.__ARMS__) raw=window.__ARMS__;
    else if(location.hash && location.hash.length>1){
@@ -698,12 +718,14 @@ var MAX_SETS = 5;   // catalog cap: at/above this, the two add tiles are disable
    if(runs && runs.length){
      CATALOG=runsToSets(runs);
      var n=CATALOG.length;
-     if(Array.isArray(sel) && sel.length===2){
-       // Restore a persisted selection (drop any now-out-of-range slot).
-       SEL=sel.map(function(x){ return (x==null||x<0||x>=n)?null:x; });
+     if(Array.isArray(sel) && sel.length>=1 && sel.length<=MAX_ARMS){
+       // Restore a persisted selection (drop any now-out-of-range slot); pad to MAX_ARMS so
+       // an older length-2 slug still loads into the wider slot array.
+       SEL=new Array(MAX_ARMS).fill(null);
+       for(var si=0; si<sel.length && si<MAX_ARMS; si++){ var x=sel[si];
+         SEL[si]=(x==null||x<0||x>=n)?null:x; }
      } else {
-       // Fresh payload: exactly two sets default to the comparison; more default to first solo.
-       SEL = n===2 ? [0,1] : [0,null];
+       SEL = defaultSel(n);   // fresh payload
      }
      // Restore persisted control state (p99 off, plot=all, ...) before the chart renders.
      if(ctrl && typeof ctrl==='object'){ CTRL=ctrl; }

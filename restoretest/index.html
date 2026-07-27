@@ -94,7 +94,10 @@ var SERIES_VAR = {
   "ctl|p99": "--ctl-p99",
   "exp|p50": "--lh-p50",
   "exp|p95": "--lh-p95",
-  "exp|p99": "--lh-p99"
+  "exp|p99": "--lh-p99",
+  "c|p50": "--c-p50",
+  "c|p95": "--c-p95",
+  "c|p99": "--c-p99"
 };
 function pyRound(x, nd) {
   if (x === null || x === void 0 || typeof x === "number" && isNaN(x)) return x;
@@ -580,9 +583,10 @@ function crossings_elapsed(runs) {
   });
   return out;
 }
-function build_series(op, ctl_runs, exp_runs, dual, el_grid, pct_grid) {
+function build_series(op, ctl_runs, exp_runs, dual, el_grid, pct_grid, c_runs) {
   var arms = [["ctl", ctl_runs]];
   if (dual) arms.push(["exp", exp_runs]);
+  if (c_runs && c_runs.length) arms.push(["c", c_runs]);
   var el = {}, pc = {}, dl = {}, cr = {}, elRuns = {}, pcRuns = {}, dlRuns = {}, ep = {}, epRuns = {};
   var qpEl = {}, qpPc = {}, qpElRuns = {}, qpPcRuns = {};
   var mb = {}, mbPc = {}, mbRuns = {}, mbPcRuns = {};
@@ -847,15 +851,6 @@ function _g2(p) {
   }
   return s;
 }
-function _e0(p) {
-  var s = p.toExponential(0);
-  return s.replace(/e([+-])(\d)$/, "e$10$2");
-}
-function _pfmt(p) {
-  if (p === null || p === void 0 || isnan(p)) return "–";
-  var s = p >= 1e-4 ? _g2(p) : _e0(p);
-  return s.indexOf("0.") === 0 ? s.slice(1) : s;
-}
 function _nice_step(x) {
   if (x <= 0) return 1;
   var e = Math.pow(10, Math.floor(Math.log10(x)));
@@ -922,6 +917,8 @@ function analyze(arms) {
     exp_runs = loadArm(arms[1]);
     if (!exp_runs.length) throw new Error(noSamples("B", arms[1]));
   }
+  var c_runs = arms.length > 2 ? loadArm(arms[2]) : [];
+  var hasC = c_runs.length > 0;
   var prov_ctl = arms[0], prov_exp = dual ? arms[1] : { settings: {} };
   var cl = arms[0].label || "A";
   var el = dual ? arms[1].label || "B" : null;
@@ -1073,8 +1070,17 @@ function analyze(arms) {
       settings: filtered
     };
   }
-  var prov_details = [[cl, _arm_detail(prov_ctl, cl, "--ctl-p95")]];
-  if (dual) prov_details.push([el, _arm_detail(prov_exp, el, "--lh-p95")]);
+  var HUE95 = ["--ctl-p95", "--lh-p95", "--c-p95"];
+  function hueFor(arm, pos) {
+    var r = arm && arm.role != null ? arm.role : pos;
+    return HUE95[r] || HUE95[pos] || "--ctl-p95";
+  }
+  var prov_details = [[cl, _arm_detail(prov_ctl, cl, hueFor(arms[0], 0))]];
+  if (dual) prov_details.push([el, _arm_detail(prov_exp, el, hueFor(arms[1], 1))]);
+  for (var ai = 2; ai < arms.length; ai++) {
+    var alab = arms[ai].label || String.fromCharCode(65 + ai);
+    prov_details.push([alab, _arm_detail(arms[ai], alab, hueFor(arms[ai], ai))]);
+  }
   var stall_pcts = [50, 90, 100];
   function _stall_elapsed(runs, pct) {
     var out = [];
@@ -1092,30 +1098,32 @@ function analyze(arms) {
     return out;
   }
   var timing = { ctl: _agg_timing(ctl_runs), exp: _agg_timing(exp_runs) };
+  if (hasC) timing.c = _agg_timing(c_runs);
+  var arm_run_lists = [ctl_runs];
+  if (dual) arm_run_lists.push(exp_runs);
+  if (hasC) arm_run_lists.push(c_runs);
+  function _dlStatsN(perArmVals) {
+    var per = perArmVals.map(function(v) {
+      return { vals: v, s: _summ(v) };
+    });
+    var base = per[0];
+    var cmp2 = per.slice(1).map(function(e) {
+      var mw = base.vals.length && e.vals.length ? mann_whitney(base.vals, e.vals) : [NAN, NAN, "none"];
+      var d = base.s.mean != null && e.s.mean != null ? e.s.mean - base.s.mean : null;
+      var dpct = d != null && base.s.mean ? d / base.s.mean * 100 : null;
+      return { d, dpct, p: mw[1] };
+    });
+    return { arms: per.map(function(e) {
+      return { v: e.s.mean, std: e.s.std, n: e.vals.length };
+    }), cmp: cmp2 };
+  }
   var time_to_stall = [];
   stall_pcts.forEach(function(pct) {
-    var ct = timing.ctl[pct], et = timing.exp[pct];
-    if (!dual) {
-      if (ct.mean !== null) time_to_stall.push({ pct, a: ct.mean, a_std: ct.std, b: null, b_std: null, dsec: null, dpct: null, p: NAN });
-      return;
-    }
-    var cv = _stall_elapsed(ctl_runs, pct), ev = _stall_elapsed(exp_runs, pct);
-    var mw = cv.length && ev.length ? mann_whitney(cv, ev) : [NAN, NAN, "none"];
-    var dsec = null, dpct = null;
-    if (ct.mean !== null && et.mean !== null) {
-      dsec = et.mean - ct.mean;
-      if (ct.mean) dpct = dsec / ct.mean * 100;
-    }
-    time_to_stall.push({
-      pct,
-      a: ct.mean,
-      a_std: ct.std,
-      b: et.mean,
-      b_std: et.std,
-      dsec,
-      dpct,
-      p: mw[1]
-    });
+    var st = _dlStatsN(arm_run_lists.map(function(runs) {
+      return _stall_elapsed(runs, pct);
+    }));
+    if (st.arms.length === 1 && st.arms[0].v === null) return;
+    time_to_stall.push({ pct, arms: st.arms, cmp: st.cmp });
   });
   function _run_mbps(run) {
     var pts = [];
@@ -1147,27 +1155,11 @@ function analyze(arms) {
   };
   var mbps_rows = [];
   [["avg MB/s", _vmean], ["peak MB/s", _vmax]].forEach(function(pr) {
-    var cv = _mbps_per_run(ctl_runs, pr[1]);
-    var cs = _summ(cv);
-    if (!dual) {
-      if (cs.mean !== null) mbps_rows.push({ label: pr[0], a: cs.mean, a_std: cs.std, b: null, b_std: null, d: null, dpct: null, p: NAN });
-      return;
-    }
-    var ev = _mbps_per_run(exp_runs, pr[1]);
-    var es = _summ(ev);
-    var mw = cv.length && ev.length ? mann_whitney(cv, ev) : [NAN, NAN, "none"];
-    var d = cs.mean !== null && es.mean !== null ? es.mean - cs.mean : null;
-    var dpct = d !== null && cs.mean ? d / cs.mean * 100 : null;
-    mbps_rows.push({
-      label: pr[0],
-      a: cs.mean,
-      a_std: cs.std,
-      b: es.mean,
-      b_std: es.std,
-      d,
-      dpct,
-      p: mw[1]
-    });
+    var st = _dlStatsN(arm_run_lists.map(function(runs) {
+      return _mbps_per_run(runs, pr[1]);
+    }));
+    if (st.arms.length === 1 && st.arms[0].v === null) return;
+    mbps_rows.push({ label: pr[0], arms: st.arms, cmp: st.cmp });
   });
   var nodes = (function() {
     for (var i = 0; i < arms.length; i++) {
@@ -1177,7 +1169,7 @@ function analyze(arms) {
     }
     return null;
   })();
-  var all_runs = ctl_runs.concat(exp_runs);
+  var all_runs = ctl_runs.concat(exp_runs).concat(c_runs);
   var max_el = 0, _elset = {};
   all_runs.forEach(function(run) {
     run.forEach(function(s) {
@@ -1193,7 +1185,7 @@ function analyze(arms) {
   for (var pg = 0; pg <= 100; pg += PCT_GRID_STEP) pct_grid.push(pg);
   var series = {};
   OPS.forEach(function(op) {
-    series[op] = build_series(op, ctl_runs, exp_runs, dual, el_grid, pct_grid);
+    series[op] = build_series(op, ctl_runs, exp_runs, dual, el_grid, pct_grid, c_runs);
   });
   var xmax_el = el_grid.length ? el_grid[el_grid.length - 1] * 1 : 1;
   var completes = all_runs.map(function(r) {
@@ -1215,6 +1207,8 @@ function analyze(arms) {
     chartData[op] = series[op];
   });
   var labels = { ctl: cl, exp: el || "B" };
+  if (hasC) labels.c = arms[2].label || "C";
+  var armKeys = ["ctl"].concat(dual ? ["exp"] : []).concat(hasC ? ["c"] : []);
   return {
     cells,
     order,
@@ -1241,16 +1235,22 @@ function analyze(arms) {
     timeRows,
     op_order,
     chartData,
-    labels
+    labels,
+    armKeys
   };
 }
 function bake_svg(op, series, big) {
   var W = 760, H = 320;
   var x0 = 52, x1 = 690, yt = 22, yb = 284;
   var mets = ["p50", "p99"];
+  var armList = ["ctl", "exp", "c"].filter(function(arm) {
+    return mets.some(function(m) {
+      return (series.el[arm + "_" + m] || []).length;
+    });
+  });
   var keys = [];
   mets.forEach(function(m) {
-    ["ctl", "exp"].forEach(function(arm) {
+    armList.forEach(function(arm) {
       keys.push([arm, m]);
     });
   });
@@ -1320,46 +1320,62 @@ function _avg(s, unit) {
   var sd = s.n > 1 ? '<span class="sd">±' + _num(s.std || 0) + "</span>" : "";
   return '<span class="pval">' + _num(s.mean) + '</span><span class="unit">' + unit + "</span>" + sd;
 }
-function _group_cells(st, dual, op, metric, stage_pct, singleArm, opts) {
+var LETTER = { ctl: "A", exp: "B", c: "C" };
+function _dimClass(p) {
+  if (isnan(p)) return " dim2";
+  if (p <= ALPHA) return "";
+  return p < 0.2 ? " dim1" : " dim2";
+}
+function _p2(p) {
+  if (p === null || p === void 0 || isnan(p)) return "–";
+  if (p < 5e-3) return "<.01";
+  var s = p.toFixed(2);
+  return s.charAt(0) === "0" ? s.slice(1) : s;
+}
+function _delta_cell(d, metric, goodPos) {
+  var dm_ids = 'data-metric="' + metric + '"';
+  var p = d.p, sig = !isnan(p) && p < ALPHA, dimc = _dimClass(p);
+  var dm = d.delta_mean, dmp = d.delta_mean_pct;
+  if (dmp === null || dmp === void 0 || isnan(p)) return '<td class="dcell' + dimc + '" ' + dm_ids + ">–</td>";
+  var vr = (goodPos ? dm > 0 : dm < 0) ? "--good" : "--bad";
+  var pcls = sig ? "psig" : "pns";
+  return '<td class="dcell' + dimc + '" ' + dm_ids + '><span class="dval" style="color:var(' + vr + ')">' + _pct(dmp) + '</span><span class="pv ' + pcls + '">p=' + _p2(p) + "</span></td>";
+}
+function _group_cells(st, op, metric, stage_pct, opts) {
   opts = opts || {};
   var unit = opts.unit || "ms";
   var goodPos = !!opts.higherBetter;
   var ids = 'data-op="' + op + '" data-metric="' + metric + '" data-stage="' + stage_pct + '"';
-  if (!dual) {
-    var arm = singleArm || "ctl";
-    return '<td class="vcell" data-arm="' + (arm === "ctl" ? "A" : "B") + '" ' + ids + ">" + _avg(st[arm], unit) + "</td>";
+  var arms = st.arms, cmp2 = st.cmp;
+  if (arms.length === 1)
+    return '<td class="vcell" data-arm="' + (LETTER[arms[0].key] || "A") + '" ' + ids + ">" + _avg(arms[0].s, unit) + "</td>";
+  var out = "";
+  for (var i = 0; i < arms.length; i++) {
+    out += '<td class="vcell' + (i === 0 ? " grpl" : "") + '" data-arm="' + (LETTER[arms[i].key] || "") + '" ' + ids + ">" + _avg(arms[i].s, unit) + "</td>";
+    if (i > 0 && !opts.valuesOnly) out += _delta_cell(cmp2[i - 1], metric, goodPos);
   }
-  var p = st.p;
-  var sig = !isnan(p) && p < ALPHA;
-  var dm = st.delta_mean, dmp = st.delta_mean_pct;
-  var dimc = sig ? "" : " dim";
-  var a = '<td class="grpl vcell" data-arm="A" ' + ids + ">" + _avg(st.ctl, unit) + "</td>";
-  var b = '<td class="vcell" data-arm="B" ' + ids + ">" + _avg(st.exp, unit) + "</td>";
-  var dm_ids = 'data-metric="' + metric + '"';
-  var d;
-  if (dmp === null || dmp === void 0 || isnan(p)) {
-    d = '<td class="dcell' + dimc + '" ' + dm_ids + ">–</td>";
-  } else {
-    var improved = goodPos ? dm > 0 : dm < 0;
-    var vr = improved ? "--good" : "--bad";
-    var pcls = sig ? "psig" : "pns";
-    d = '<td class="dcell' + dimc + '" ' + dm_ids + '><span class="dval" style="color:var(' + vr + ')">' + _pct(dmp) + '</span><span class="pv ' + pcls + '">p=' + _pfmt(p) + "</span></td>";
-  }
-  return a + b + d;
+  return out;
 }
 function _rowTimeRun(sop, arm, i, row) {
   if (!row.special) return row.t;
   var comp = _dlCrossT((sop.dlRuns[arm] || [])[i], 100);
   return comp == null ? null : row.special === "done1m" ? comp + 60 : comp;
 }
-function _stats(ctl, exp) {
-  var cs = _summ(ctl), es = _summ(exp);
-  var mw = ctl.length && exp.length ? mann_whitney(ctl, exp) : [NAN, NAN, "none"];
-  var dm = cs.mean != null && es.mean != null ? es.mean - cs.mean : null;
-  var dmp = dm != null && cs.mean ? dm / cs.mean * 100 : null;
-  return { ctl: cs, exp: es, p: mw[1], delta_mean: dm, delta_mean_pct: dmp };
+function _statsN(per) {
+  var arms = per.map(function(p) {
+    return { key: p.key, s: _summ(p.vals), vals: p.vals };
+  });
+  var base = arms[0], cmp2 = [];
+  for (var i = 1; i < arms.length; i++) {
+    var e = arms[i];
+    var mw = base.vals.length && e.vals.length ? mann_whitney(base.vals, e.vals) : [NAN, NAN, "none"];
+    var dm = base.s.mean != null && e.s.mean != null ? e.s.mean - base.s.mean : null;
+    var dmp = dm != null && base.s.mean ? dm / base.s.mean * 100 : null;
+    cmp2.push({ p: mw[1], delta_mean: dm, delta_mean_pct: dmp });
+  }
+  return { arms, cmp: cmp2 };
 }
-function _time_cell(sop, metric, row) {
+function _time_cell(sop, metric, row, shown) {
   function vals(arm) {
     var rr = sop.elRuns[arm + "_" + metric] || [];
     return rr.map(function(pl, i) {
@@ -1369,9 +1385,11 @@ function _time_cell(sop, metric, row) {
       return v != null;
     });
   }
-  return _stats(vals("ctl"), vals("exp"));
+  return _statsN(shown.map(function(a) {
+    return { key: a, vals: vals(a) };
+  }));
 }
-function _dl_cell(sop, row) {
+function _dl_cell(sop, row, shown) {
   function vals(arm) {
     var rr = sop.dlRuns[arm] || [];
     var out = row.special ? rr.map(function() {
@@ -1383,38 +1401,50 @@ function _dl_cell(sop, row) {
       return v != null;
     });
   }
-  return _stats(vals("ctl"), vals("exp"));
+  return _statsN(shown.map(function(a) {
+    return { key: a, vals: vals(a) };
+  }));
 }
-function op_time_table(op, sop, dual, la, lb, timeRows, armMode) {
-  var effDual = dual && (armMode === void 0 || armMode === "both");
-  var singleArm = armMode === "A" ? "ctl" : armMode === "B" ? "exp" : null;
-  var dlOpts = { unit: "%", higherBetter: true };
+function op_time_table(op, sop, armKeys, armLabels, timeRows, armMode) {
+  var shown = armMode && armMode !== "both" ? armKeys.filter(function(a) {
+    return LETTER[a] === armMode;
+  }) : armKeys;
+  if (!shown.length) shown = [armKeys[0]];
+  var multi = shown.length > 1;
+  var dlOpts = { unit: "%", higherBetter: true, valuesOnly: true };
   var cols = ["download"].concat(MAIN_METRICS);
+  var span = function(m) {
+    return m === "download" ? shown.length : 2 * shown.length - 1;
+  };
   var out = ['<table class="tbl">'];
-  if (effDual) {
+  var dhdr = shown.length > 2 ? "Δ vs " + esc(armLabels[shown[0]] || shown[0]) : "Δ";
+  if (multi) {
     out.push('<thead><tr><th class="l" rowspan="2">time</th>');
     cols.forEach(function(m) {
-      out.push('<th colspan="3" class="grp" data-metric="' + m + '">' + m + "</th>");
+      out.push('<th colspan="' + span(m) + '" class="grp" data-metric="' + m + '">' + m + "</th>");
     });
     out.push("</tr><tr>");
     cols.forEach(function(m) {
-      out.push('<th class="grpl" data-metric="' + m + '">' + esc(la) + '</th><th data-metric="' + m + '">' + esc(lb) + '</th><th data-metric="' + m + '">Δ (p)</th>');
+      shown.forEach(function(a, i) {
+        out.push("<th" + (i === 0 ? ' class="grpl"' : "") + ' data-metric="' + m + '">' + esc(armLabels[a] || a) + "</th>");
+        if (i > 0 && m !== "download") out.push('<th data-metric="' + m + '">' + dhdr + "</th>");
+      });
     });
     out.push("</tr></thead><tbody>");
   } else {
-    var lab = singleArm === "exp" ? lb : la;
+    var lab = armLabels[shown[0]] || shown[0];
     out.push('<thead><tr><th class="l">time</th>');
     cols.forEach(function(m) {
-      out.push('<th data-metric="' + m + '">' + m + (dual ? ' <span class="muted">(' + esc(lab) + ")</span>" : "") + "</th>");
+      out.push('<th data-metric="' + m + '">' + m + (armKeys.length > 1 ? ' <span class="muted">(' + esc(lab) + ")</span>" : "") + "</th>");
     });
     out.push("</tr></thead><tbody>");
   }
   timeRows.forEach(function(row) {
     var stageId = row.t != null ? row.t : row.special;
     out.push('<tr><td class="l stage">' + esc(row.label) + "</td>");
-    out.push(_group_cells(_dl_cell(sop, row), effDual, op, "download", stageId, singleArm, dlOpts));
+    out.push(_group_cells(_dl_cell(sop, row, shown), op, "download", stageId, dlOpts));
     MAIN_METRICS.forEach(function(metric) {
-      out.push(_group_cells(_time_cell(sop, metric, row), effDual, op, metric, stageId, singleArm));
+      out.push(_group_cells(_time_cell(sop, metric, row, shown), op, metric, stageId));
     });
     out.push("</tr>");
   });
@@ -1505,68 +1535,76 @@ function prov_table(ctx) {
   out.push("</tbody></table>");
   return out.join("");
 }
-function _dlHead(title, both, la, lb, armMode, valSuffix, deltaLabel) {
-  var out = '<table class="tbl dlt">' + _dlcols(both) + '<thead><tr><th class="l">' + title + "</th>";
-  if (both) out += "<th>" + esc(la) + valSuffix + "</th><th>" + esc(lb) + valSuffix + "</th><th>" + deltaLabel + "</th><th>Δ%</th><th>p</th>";
-  else out += "<th>" + esc(armMode === "A" ? la : lb) + valSuffix + "</th>";
+function _dlShown(ctx, armMode) {
+  var armKeys = ctx.armKeys || ["ctl"].concat(ctx.dual ? ["exp"] : []);
+  var shown = armMode && armMode !== "both" ? armKeys.filter(function(a) {
+    return LETTER[a] === armMode;
+  }) : armKeys;
+  if (!shown.length) shown = [armKeys[0]];
+  return { armKeys, shown };
+}
+function _dlcols(n) {
+  if (n <= 1) return '<colgroup><col style="width:27%"><col></colgroup>';
+  var valW = n >= 3 ? 13 : 20, delW = n >= 3 ? 18 : 38, g = '<colgroup><col style="width:22%">';
+  for (var i = 0; i < n; i++) {
+    g += '<col style="width:' + valW + '%">';
+    if (i > 0) g += '<col style="width:' + delW + '%">';
+  }
+  return g + "</colgroup>";
+}
+function _dlHead(title, shown, labels, valSuffix) {
+  var dhdr = shown.length > 2 ? "Δ vs " + esc(labels[shown[0]] || shown[0]) : "Δ";
+  var out = '<table class="tbl dlt">' + _dlcols(shown.length) + '<thead><tr><th class="l">' + title + "</th>";
+  shown.forEach(function(a, i) {
+    out += "<th>" + esc(labels[a] || a) + valSuffix + "</th>";
+    if (i > 0) out += "<th>" + dhdr + "</th>";
+  });
   return out + "</tr></thead><tbody>";
 }
+function _dlDelta(d, goodPos, deltaVal, deltaUnit) {
+  var p = d.p, sig = !isnan(p) && p < ALPHA, dc = ' class="dcell' + _dimClass(p) + '"';
+  if (d.d === null || d.d === void 0) return "<td" + dc + ">–</td>";
+  var vr = (goodPos ? d.d > 0 : d.d < 0) ? "--good" : "--bad";
+  var absStr = deltaVal(d.d) + (deltaUnit || "");
+  var pcls = sig ? "psig" : "pns", pTxt = isnan(p) ? "" : "p=" + _p2(p);
+  var sub = "(" + absStr + (pTxt ? ', <span class="' + pcls + '">' + pTxt + "</span>" : "") + ")";
+  return "<td" + dc + '><span class="dval" style="color:var(' + vr + ')">' + _pct(d.dpct) + '</span><span class="dsub">' + sub + "</span></td>";
+}
 function _dlRow(o) {
-  if (!o.both) {
-    var one = o.armMode === "A" ? o.fmtVal(o.a, o.aStd, o.nCtl) : o.fmtVal(o.b, o.bStd, o.nExp);
-    return '<tr><td class="l stage">' + o.label + "</td><td>" + one + "</td></tr>";
+  var cells = "";
+  for (var i = 0; i < o.arms.length; i++) {
+    var A = o.arms[i];
+    cells += "<td>" + o.fmtVal(A.v, A.std, A.n) + "</td>";
+    if (i > 0) cells += _dlDelta(o.cmp[i - 1], o.goodPos, o.deltaVal, o.deltaUnit);
   }
-  var p = o.p, sig = !isnan(p) && p < ALPHA;
-  var a = o.fmtVal(o.a, o.aStd, o.nCtl), b = o.fmtVal(o.b, o.bStd, o.nExp);
-  var dcell, dpctc;
-  if (o.d === null || o.d === void 0) {
-    dcell = "–";
-    dpctc = "–";
-  } else {
-    var improved = o.goodPos ? o.d > 0 : o.d < 0;
-    var vr = improved ? "--good" : "--bad";
-    dcell = '<span style="color:var(' + vr + ')">' + o.deltaVal(o.d) + "</span>" + (o.deltaUnit || "");
-    dpctc = '<span style="color:var(' + vr + ')">' + _pct(o.dpct) + "</span>";
-  }
-  var pcell;
-  if (isnan(p)) pcell = "–";
-  else {
-    var ptxt = p >= 1e-4 ? _g2(p) : _e0(p);
-    pcell = sig ? '<span class="psig">' + ptxt + "</span>" : '<span class="pns">' + ptxt + "</span>";
-  }
-  var dc = sig ? "" : ' class="dim"';
-  return '<tr><td class="l stage">' + o.label + "</td><td>" + a + "</td><td>" + b + "</td><td" + dc + ">" + dcell + "</td><td" + dc + ">" + dpctc + '</td><td class="pcol' + (sig ? "" : " dim") + '">' + pcell + "</td></tr>";
+  return '<tr><td class="l stage">' + o.label + "</td>" + cells + "</tr>";
+}
+function _dlPick(row, armKeys, shown) {
+  if (shown.length === armKeys.length) return { arms: row.arms, cmp: row.cmp };
+  var j = armKeys.indexOf(shown[0]);
+  return { arms: [row.arms[j]], cmp: [] };
 }
 function time_to_stall_table(ctx, armMode) {
   if (!ctx.time_to_stall.length) return "";
-  var la = ctx.control_label, lb = ctx.experiment_label;
-  var solo = !ctx.dual, both = !solo && (armMode === void 0 || armMode === "both"), mode = solo ? "A" : armMode;
+  var S = _dlShown(ctx, armMode);
   var secCell = function(v, sd, n) {
     if (v === null || v === void 0) return "–";
     var s = n > 1 ? '<span class="sd">±' + (sd || 0).toFixed(0) + "</span>" : "";
     return '<span class="pval">' + v.toFixed(0) + '</span><span class="unit">s</span>' + s;
   };
-  var out = [_dlHead("Progress", both, la, lb, mode, " elapsed", "Δ s")];
+  var out = [_dlHead("Progress", S.shown, ctx.labels, " elapsed")];
   ctx.time_to_stall.forEach(function(r) {
+    var pk = _dlPick(r, S.armKeys, S.shown);
     out.push(_dlRow({
       label: r.pct + "%",
-      both,
-      armMode: mode,
-      a: r.a,
-      aStd: r.a_std,
-      b: r.b,
-      bStd: r.b_std,
-      nCtl: ctx.n_ctl,
-      nExp: ctx.n_exp,
-      d: r.dsec,
-      dpct: r.dpct,
-      p: r.p,
+      arms: pk.arms,
+      cmp: pk.cmp,
       goodPos: false,
       fmtVal: secCell,
       deltaVal: function(d) {
         return _sms(d);
       },
-      deltaUnit: ""
+      deltaUnit: '<span class="unit">s</span>'
     }));
   });
   out.push("</tbody></table>");
@@ -1574,10 +1612,9 @@ function time_to_stall_table(ctx, armMode) {
 }
 function mbps_table(ctx, armMode) {
   if (!ctx.mbps_rows || !ctx.mbps_rows.length) return "";
-  var la = ctx.control_label, lb = ctx.experiment_label;
-  var solo = !ctx.dual, both = !solo && (armMode === void 0 || armMode === "both"), mode = solo ? "A" : armMode;
+  var S = _dlShown(ctx, armMode);
   var nd = ctx.nodes && ctx.nodes > 0 ? ctx.nodes : null;
-  var unit = "MB/s", unitSpan = '<span class="unit">' + unit + "</span>";
+  var unitSpan = '<span class="unit">MB/s</span>';
   var rowLabel = function(lbl) {
     return esc(lbl) + (nd && nd > 1 ? "/node" : "");
   };
@@ -1586,21 +1623,13 @@ function mbps_table(ctx, armMode) {
     var s = n > 1 ? '<span class="sd">±' + _num(sd || 0) + "</span>" : "";
     return '<span class="pval">' + _num(v) + "</span>" + unitSpan + s;
   };
-  var out = [_dlHead("throughput", both, la, lb, mode, "", "Δ")];
+  var out = [_dlHead("throughput", S.shown, ctx.labels, "")];
   ctx.mbps_rows.forEach(function(r) {
+    var pk = _dlPick(r, S.armKeys, S.shown);
     out.push(_dlRow({
       label: rowLabel(r.label),
-      both,
-      armMode: mode,
-      a: r.a,
-      aStd: r.a_std,
-      b: r.b,
-      bStd: r.b_std,
-      nCtl: ctx.n_ctl,
-      nExp: ctx.n_exp,
-      d: r.d,
-      dpct: r.dpct,
-      p: r.p,
+      arms: pk.arms,
+      cmp: pk.cmp,
       goodPos: true,
       fmtVal: valCell,
       deltaVal: function(d) {
@@ -1611,9 +1640,6 @@ function mbps_table(ctx, armMode) {
   });
   out.push("</tbody></table>");
   return out.join("");
-}
-function _dlcols(both) {
-  return both ? '<colgroup><col style="width:27%"><col style="width:18%"><col style="width:18%"><col style="width:13%"><col style="width:13%"><col style="width:11%"></colgroup>' : '<colgroup><col style="width:27%"><col></colgroup>';
 }
 function _mbUnit(vals) {
   var mx = 0;
@@ -1627,32 +1653,19 @@ function _mbUnit(vals) {
 function pdist_table(ctx, armMode) {
   var s0 = ctx.series && (ctx.series.agg || ctx.op_order && ctx.series[ctx.op_order[0]]);
   if (!s0 || !s0.rDeltaRuns) return "";
+  var S = _dlShown(ctx, armMode);
   var peaks = function(arm) {
     var runs = s0.rDeltaRuns[arm] || [], out2 = [];
     runs.forEach(function(r) {
       if (!r || !r.length) return;
-      var mx = null;
+      var mx2 = null;
       for (var i = 0; i < r.length; i++) {
         var y = r[i].y;
-        if (y != null && (mx == null || y > mx)) mx = y;
+        if (y != null && (mx2 == null || y > mx2)) mx2 = y;
       }
-      if (mx != null) out2.push(mx);
+      if (mx2 != null) out2.push(mx2);
     });
     return out2;
-  };
-  var cv = peaks("ctl"), ev = peaks("exp");
-  if (!cv.length && !ev.length) return "";
-  var cs = _summ(cv), es = _summ(ev);
-  var mw = cv.length && ev.length ? mann_whitney(cv, ev) : [NAN, NAN, "none"];
-  var d = cs.mean != null && es.mean != null ? es.mean - cs.mean : null;
-  var dpct = d != null && cs.mean ? d / cs.mean * 100 : null;
-  var la = ctx.control_label, lb = ctx.experiment_label;
-  var solo = !ctx.dual, both = !solo && (armMode === void 0 || armMode === "both"), mode = solo ? "A" : armMode;
-  var u = _mbUnit([cs.mean, es.mean, d]);
-  var valCell = function(v, sd, n) {
-    if (v == null) return "–";
-    var s = n > 1 ? '<span class="sd">±' + _num((sd || 0) / u.div) + "</span>" : "";
-    return '<span class="pval">' + _num(v / u.div) + '</span><span class="unit">' + u.unit + "</span>" + s;
   };
   var initSkew = function(arm) {
     var dr = s0.rDeltaRuns && s0.rDeltaRuns[arm] || [], mr = s0.rMeanRuns && s0.rMeanRuns[arm] || [], o = [];
@@ -1665,31 +1678,52 @@ function pdist_table(ctx, armMode) {
     }
     return o;
   };
-  var civ = initSkew("ctl"), eiv = initSkew("exp");
-  var cis = _summ(civ), eis = _summ(eiv);
-  var imw = civ.length && eiv.length ? mann_whitney(civ, eiv) : [NAN, NAN, "none"];
-  var id = cis.mean != null && eis.mean != null ? eis.mean - cis.mean : null;
-  var idpct = id != null && cis.mean ? id / cis.mean * 100 : null;
+  if (!S.armKeys.some(function(a) {
+    return peaks(a).length;
+  })) return "";
+  var statN = function(fn) {
+    var per = S.shown.map(function(a) {
+      var v = fn(a);
+      return { vals: v, s: _summ(v) };
+    });
+    var base = per[0], cmp2 = per.slice(1).map(function(e) {
+      var mw = base.vals.length && e.vals.length ? mann_whitney(base.vals, e.vals) : [NAN, NAN, "none"];
+      var d = base.s.mean != null && e.s.mean != null ? e.s.mean - base.s.mean : null;
+      var dpct = d != null && base.s.mean ? d / base.s.mean * 100 : null;
+      return { d, dpct, p: mw[1] };
+    });
+    return { per, cmp: cmp2 };
+  };
+  var toArms = function(st) {
+    return st.per.map(function(e) {
+      return { v: e.s.mean, std: e.s.std, n: e.vals.length };
+    });
+  };
+  var mx = statN(peaks), sk = statN(initSkew);
+  var mags = [];
+  mx.per.forEach(function(e) {
+    mags.push(e.s.mean);
+  });
+  mx.cmp.forEach(function(c) {
+    mags.push(c.d);
+  });
+  var u = _mbUnit(mags);
+  var valCell = function(v, sd, n) {
+    if (v == null) return "–";
+    var s = n > 1 ? '<span class="sd">±' + _num((sd || 0) / u.div) + "</span>" : "";
+    return '<span class="pval">' + _num(v / u.div) + '</span><span class="unit">' + u.unit + "</span>" + s;
+  };
   var pctCell = function(v, sd, n) {
     if (v == null) return "–";
     var s = n > 1 ? '<span class="sd">±' + _num(sd || 0) + "</span>" : "";
     return '<span class="pval">' + _num(v) + '</span><span class="unit">%</span>' + s;
   };
   var link = ' <a class="showgraph" data-pdist-show href="#" title="show the per-node distribution over time"></a>';
-  var out = [_dlHead("progress distribution", both, la, lb, mode, "", "Δ")];
+  var out = [_dlHead("progress distribution", S.shown, ctx.labels, "")];
   out.push(_dlRow({
     label: "initial skew",
-    both,
-    armMode: mode,
-    a: cis.mean,
-    aStd: cis.std,
-    b: eis.mean,
-    bStd: eis.std,
-    nCtl: ctx.n_ctl,
-    nExp: ctx.n_exp,
-    d: id,
-    dpct: idpct,
-    p: imw[1],
+    arms: toArms(sk),
+    cmp: sk.cmp,
     goodPos: false,
     // less starting skew is better
     fmtVal: pctCell,
@@ -1700,17 +1734,8 @@ function pdist_table(ctx, armMode) {
   }));
   out.push(_dlRow({
     label: "max delta" + link,
-    both,
-    armMode: mode,
-    a: cs.mean,
-    aStd: cs.std,
-    b: es.mean,
-    bStd: es.std,
-    nCtl: ctx.n_ctl,
-    nExp: ctx.n_exp,
-    d,
-    dpct,
-    p: mw[1],
+    arms: toArms(mx),
+    cmp: mx.cmp,
     goodPos: false,
     // less node skew is better
     fmtVal: valCell,
@@ -1729,7 +1754,9 @@ function download_tables(ctx, armMode) {
   return parts.join('<div class="tblgap"></div>');
 }
 function render_body(ctx) {
-  var dual = ctx.dual, cl = ctx.control_label, el = ctx.experiment_label;
+  ctx.dual;
+  ctx.control_label;
+  ctx.experiment_label;
   var op_order = ctx.op_order;
   var multiRun = Math.max(ctx.n_ctl || 0, ctx.n_exp || 0) > 1;
   var A = [];
@@ -1789,7 +1816,7 @@ function render_body(ctx) {
     var big = op === "agg";
     A.push("<h3>" + esc(op_heading(op)) + "</h3>");
     A.push("<div class='chart' data-op='" + esc(op) + "' data-big='" + (big ? 1 : 0) + "'>" + bake_svg(op, ctx.series[op]) + "</div>");
-    A.push("<div class='optbl' data-op='" + esc(op) + "'>" + op_time_table(op, ctx.series[op], dual, cl, el || "B", ctx.timeRows) + "</div>");
+    A.push("<div class='optbl' data-op='" + esc(op) + "'>" + op_time_table(op, ctx.series[op], ctx.armKeys, ctx.labels, ctx.timeRows) + "</div>");
   });
   A.push("</div>");
   A.push("</div>");
@@ -1837,16 +1864,19 @@ function runChart(RC) {
   (function() {
     var D = RC.chartData;
     var LAB = RC.labels || { ctl: "A", exp: "B" };
-    var VAR = {
-      ctl_p50: "--ctl-p50",
-      ctl_p95: "--ctl-p95",
-      ctl_p99: "--ctl-p99",
-      exp_p50: "--lh-p50",
-      exp_p95: "--lh-p95",
-      exp_p99: "--lh-p99"
-    };
-    var ARMS = ["ctl", "exp"];
+    var ARMS = RC.armKeys || ["ctl", "exp"];
+    var FAM = { ctl: "ctl", exp: "lh", c: "c" };
+    var LETTER2 = { ctl: "A", exp: "B", c: "C" };
+    function COL(a, sh) {
+      return "var(--" + (FAM[a] || "ctl") + "-" + sh + ")";
+    }
     var PMETS = ["p50", "p95", "p99"];
+    var VAR = {};
+    ARMS.forEach(function(a) {
+      PMETS.forEach(function(m) {
+        VAR[a + "_" + m] = "--" + (FAM[a] || "ctl") + "-" + m;
+      });
+    });
     var XMAX = RC.xmaxEl || 1;
     var XFULL = XMAX;
     var CTX = RC.ctx || {};
@@ -1867,11 +1897,22 @@ function runChart(RC) {
     if (RC.ctrl0) for (var _ck in RC.ctrl0) {
       if (_ck in state) state[_ck] = RC.ctrl0[_ck];
     }
+    if (state.armMode !== "both" && ARMS.map(function(a) {
+      return LETTER2[a];
+    }).indexOf(state.armMode) < 0) state.armMode = "both";
+    var threeUp = ARMS.length >= 3;
+    if (threeUp && PMETS.filter(function(m) {
+      return state[m];
+    }).length !== 1) {
+      state.p50 = false;
+      state.p95 = false;
+      state.p99 = true;
+    }
     function persistCtrl() {
       if (RC.persistCtrl) RC.persistCtrl(state);
     }
     function armOn(a) {
-      return a === "ctl" ? state.armMode !== "B" : state.armMode !== "A";
+      return state.armMode === "both" || state.armMode === LETTER2[a];
     }
     function effRun(a) {
       var r = isoRun();
@@ -1952,7 +1993,9 @@ function runChart(RC) {
       }
       var W = 760, H = 320;
       var x0 = 52, x1 = 690, yt = 22, yb = 284, lx = 9;
-      var multiArm = RC.dual && armOn("ctl") && armOn("exp");
+      var multiArm = ARMS.filter(function(a) {
+        return armOn(a);
+      }).length > 1;
       if (!multiArm || state.qps) x1 -= 40;
       var log = state.scale === "log";
       var keys = [];
@@ -2179,7 +2222,7 @@ function runChart(RC) {
           if (!armOn(a)) return;
           var ce = meanComplete(a);
           if (ce == null || ce < xmin || ce > xmax) return;
-          var x2 = X(ce), col = a === "ctl" ? "var(--ctl-p95)" : "var(--lh-p95)";
+          var x2 = X(ce), col = COL(a, "p95");
           s.push('<line x1="' + x2.toFixed(1) + '" y1="' + yt + '" x2="' + x2.toFixed(1) + '" y2="' + yb + '" style="stroke:' + col + ';opacity:0.4;stroke-dasharray:4 3"/>');
           s.push('<text class="mslab" x="' + x2.toFixed(1) + '" y="' + (yb + 16 + mi * 7) + '" text-anchor="middle" style="fill:' + col + '">' + Math.round(ce) + "s</text>");
           mi++;
@@ -2205,7 +2248,7 @@ function runChart(RC) {
         });
         if (state.plot === "all") {
           keys.forEach(function(k) {
-            var rs = runsMap && runsMap[k] || [], arm = k.slice(0, 3);
+            var rs = runsMap && runsMap[k] || [], arm = k.split("_")[0];
             rs.forEach(function(pl, ri) {
               var c = clipPts(pl, xmin, xmax);
               if (c.length < 2) return;
@@ -2262,7 +2305,7 @@ function runChart(RC) {
           }
           ARMS.forEach(function(a) {
             if (!armOn(a)) return;
-            var col = a === "ctl" ? "var(--ctl-p95)" : "var(--lh-p95)";
+            var col = COL(a, "p95");
             var drawq = function(arr, key) {
               if (!arr || !arr.length) return null;
               var c2 = clipPts(arr.map(function(p) {
@@ -2314,7 +2357,7 @@ function runChart(RC) {
           ARMS.forEach(function(a) {
             if (!armOn(a)) return;
             var qm = elapsed ? meta.qpEl : meta.qpPc, qr = elapsed ? meta.qpElRuns : meta.qpPcRuns;
-            cser.push({ color: "var(" + (a === "ctl" ? "--ctl-p95" : "--lh-p95") + ")", y: Yq, fmt: rms, at: function(cxv) {
+            cser.push({ color: COL(a, "p95"), y: Yq, fmt: rms, at: function(cxv) {
               var e = effRun(a);
               if (e === "skip") return null;
               if (e != null) {
@@ -2346,9 +2389,9 @@ function runChart(RC) {
           gridX: g0,
           series: cser,
           head: function(cxv) {
-            var h2 = elapsed ? Math.round(cxv) + "s" : Math.round(cxv) + "%";
+            var h = elapsed ? Math.round(cxv) + "s" : Math.round(cxv) + "%";
             var _r = isoRun();
-            if (_r) h2 += " · " + (multiArm || RC.dual ? (LAB[_r.arm] || _r.arm) + " " : "") + "run " + (_r.idx + 1);
+            if (_r) h += " · " + (multiArm || RC.dual ? (LAB[_r.arm] || _r.arm) + " " : "") + "run " + (_r.idx + 1);
             if (elapsed && (!multiArm || _r)) {
               var pc = null;
               ARMS.forEach(function(a) {
@@ -2361,9 +2404,9 @@ function runChart(RC) {
                   if (p != null) pc = p;
                 }
               });
-              if (pc != null) h2 += " · " + Math.round(pc) + "% dl";
+              if (pc != null) h += " · " + Math.round(pc) + "% dl";
             }
-            return h2;
+            return h;
           }
         };
       })();
@@ -2376,14 +2419,18 @@ function runChart(RC) {
           var p = pts[pts.length - 1];
           ep[a] = [X(p.x), Math.min(Math.max(Y(p.m), yt + 6), yb - 4)];
         });
-        if (ep.ctl && ep.exp && Math.abs(ep.ctl[1] - ep.exp[1]) < 10) {
-          var h = ep.ctl[1] <= ep.exp[1] ? "ctl" : "exp", l = h === "ctl" ? "exp" : "ctl";
-          ep[l][1] = ep[h][1] + 10;
-          var ov = ep[l][1] - (yb - 4);
-          if (ov > 0) {
-            ep[h][1] -= ov;
-            ep[l][1] -= ov;
-          }
+        var eord = Object.keys(ep).sort(function(a, b2) {
+          return ep[a][1] - ep[b2][1];
+        });
+        for (var eoi = 1; eoi < eord.length; eoi++) {
+          var pv2 = ep[eord[eoi - 1]][1];
+          if (ep[eord[eoi]][1] - pv2 < 10) ep[eord[eoi]][1] = pv2 + 10;
+        }
+        if (eord.length) {
+          var eov = ep[eord[eord.length - 1]][1] - (yb - 4);
+          if (eov > 0) eord.forEach(function(a) {
+            ep[a][1] -= eov;
+          });
         }
         ARMS.forEach(function(a) {
           if (!ep[a]) return;
@@ -2410,7 +2457,10 @@ function runChart(RC) {
       var cl = function(u) {
         return u < 0 ? 0 : u > 100 ? 100 : u;
       };
-      var colOf = { ctl: "var(--ctl-p95)", exp: "var(--lh-p95)" };
+      var colOf = {};
+      ARMS.forEach(function(a) {
+        colOf[a] = COL(a, "p95");
+      });
       var multi = ARMS.filter(function(a) {
         return armOn(a) && meta.dl[a] && meta.dl[a].length;
       }).length > 1;
@@ -2502,7 +2552,7 @@ function runChart(RC) {
         var inWin = function(v) {
           return v >= xmin - 1e-9 && v <= xmax + 1e-9;
         };
-        drawArm = function(a) {
+        drawArm = function(a, idx) {
           var runs = meta.dlRuns[a] || [], nr = runs.length, mean = meta.dl[a] || [];
           if (state.plot === "all") {
             if (mean.length >= 2) band(mean, colOf[a]);
@@ -2522,14 +2572,14 @@ function runChart(RC) {
                 var xc = X(ce);
                 s.push('<line x1="' + xc.toFixed(1) + '" y1="' + yt + '" x2="' + xc.toFixed(1) + '" y2="' + yb + '" style="stroke:' + colOf[a] + ';opacity:0.4;stroke-dasharray:4 3"/>');
                 diamond(xc, Y(100), colOf[a]);
-                var yoff = multi && a === "exp" ? 23 : 16;
+                var yoff = multi ? 16 + idx * 7 : 16;
                 s.push('<text class="mslab" x="' + xc.toFixed(1) + '" y="' + (yb + yoff) + '" text-anchor="middle" style="fill:' + colOf[a] + '">' + Math.round(ce) + "s</text>");
               }
             }
           }
           if (mean.length) {
             var mc = crossEl(mean, 100), lxp = mc != null ? Math.min(mc, xmax) : null;
-            if (lxp != null && inWin(lxp)) s.push('<text class="endlab" x="' + (X(lxp) + 4).toFixed(1) + '" y="' + (yt + 8).toFixed(1) + '" style="fill:' + colOf[a] + '">' + (LAB[a] || a) + "</text>");
+            if (lxp != null && inWin(lxp)) s.push('<text class="endlab" x="' + (X(lxp) + 4).toFixed(1) + '" y="' + (yt + 8 + idx * 11).toFixed(1) + '" style="fill:' + colOf[a] + '">' + (LAB[a] || a) + "</text>");
           }
         };
       } else {
@@ -2588,7 +2638,7 @@ function runChart(RC) {
             }).join(" ") + '" style="fill:' + color + ";opacity:" + op2 + '"/>');
           });
         };
-        drawArm = function(a) {
+        drawArm = function(a, idx) {
           var runs = meta.epRuns[a] || [], nr = runs.length, mean = meta.ep[a] || [];
           if (state.plot === "all") {
             if (mean.length >= 2) band(mean, colOf[a]);
@@ -2621,8 +2671,12 @@ function runChart(RC) {
       xticks();
       s.push('<text class="axtitle" x="' + (x0 + x1) / 2 + '" y="' + (H - 4) + '" text-anchor="middle">' + xTitle + "</text>");
       s.push('<text class="axtitle" transform="rotate(-90 ' + lx + " " + (yt + yb) / 2 + ')" x="' + lx + '" y="' + (yt + yb) / 2 + '" text-anchor="middle">' + yTitle + "</text>");
+      var _si = 0;
       ARMS.forEach(function(a) {
-        if (armOn(a)) drawArm(a);
+        if (armOn(a)) {
+          drawArm(a, _si);
+          _si++;
+        }
       });
       var NODES = RC.nodes || 1;
       var mbTitle = NODES > 1 ? "MB/s/node" : "MB/s";
@@ -2654,7 +2708,7 @@ function runChart(RC) {
         s.push('<text class="axtitle" transform="rotate(-90 ' + (x1 + 30) + " " + (yt + yb) / 2 + ')" x="' + (x1 + 30) + '" y="' + (yt + yb) / 2 + '" text-anchor="middle">' + mbTitle + "</text>");
         ARMS.forEach(function(a) {
           if (!armOn(a)) return;
-          var col = a === "ctl" ? "var(--ctl-p50)" : "var(--lh-p50)";
+          var col = COL(a, "p50");
           var runLine = function(pl, key) {
             var cc2 = clipPts(pl, xmin, xmax);
             if (cc2.length < 2) return;
@@ -2782,7 +2836,10 @@ function runChart(RC) {
           });
           return v;
         };
-        var d0 = elapsed ? meta.dl[armOn("ctl") ? "ctl" : "exp"] : meta.ep[armOn("ctl") ? "ctl" : "exp"];
+        var fa = ARMS.filter(function(a) {
+          return armOn(a);
+        })[0] || "ctl";
+        var d0 = elapsed ? meta.dl[fa] : meta.ep[fa];
         var g0 = d0 && d0.length ? d0.map(function(p) {
           return p.x;
         }) : null;
@@ -2846,7 +2903,7 @@ function runChart(RC) {
         return v >= 100 ? Math.round(v) : Math.round(v * 10) / 10;
       };
       var shadeOf = function(a, sh) {
-        return "var(--" + (a === "ctl" ? "ctl" : "lh") + "-" + sh + ")";
+        return COL(a, sh);
       };
       var tintOf = function(a) {
         return shadeOf(a, "p50");
@@ -3162,7 +3219,7 @@ function runChart(RC) {
       Object.keys(D).forEach(function(op) {
         var box = document.querySelector('.optbl[data-op="' + op + '"]');
         if (!box) return;
-        box.innerHTML = op_time_table(op, C.series[op], C.dual, C.control_label, C.experiment_label || "B", C.timeRows, state.armMode);
+        box.innerHTML = op_time_table(op, C.series[op], C.armKeys, C.labels, C.timeRows, state.armMode);
       });
       var dlt = document.querySelector(".dltbl");
       if (dlt) dlt.innerHTML = download_tables(C, state.armMode);
@@ -3185,6 +3242,7 @@ function runChart(RC) {
       });
       document.body.classList.toggle("arm-a", state.armMode === "A");
       document.body.classList.toggle("arm-b", state.armMode === "B");
+      document.body.classList.toggle("arm-c", state.armMode === "C");
       var qb = document.querySelector("[data-qps]");
       if (qb) qb.classList.toggle("on", state.qps);
       ["min", "mean", "max", "ratio", "delta"].forEach(function(w) {
@@ -3201,7 +3259,11 @@ function runChart(RC) {
       var b = e.target.closest("[data-pct],[data-qps],[data-scale],[data-xmode],[data-plot],[data-remote-min],[data-remote-mean],[data-remote-max],[data-remote-ratio],[data-remote-delta]");
       if (!b) return;
       if (b.dataset.pct) {
-        state[b.dataset.pct] = !state[b.dataset.pct];
+        if (threeUp) {
+          PMETS.forEach(function(m) {
+            state[m] = m === b.dataset.pct;
+          });
+        } else state[b.dataset.pct] = !state[b.dataset.pct];
       } else if (b.dataset.plot) {
         state.plot = b.dataset.plot;
       } else if (b.hasAttribute("data-qps")) {
@@ -3314,8 +3376,13 @@ function runChart(RC) {
       }
     }
     function cycleArm() {
-      if (!RC.dual) return;
-      state.armMode = state.armMode === "both" ? "A" : state.armMode === "A" ? "B" : "both";
+      if (ARMS.length < 2) return;
+      var seq = ["both"].concat(ARMS.map(function(a) {
+        return LETTER2[a];
+      }));
+      var i = seq.indexOf(state.armMode);
+      if (i < 0) i = 0;
+      state.armMode = seq[(i + 1) % seq.length];
       sync();
       redraw();
       refreshTables();
@@ -3854,6 +3921,7 @@ if (typeof window !== "undefined") {
   window.addEventListener("resize", measure);
 }
 var MAX_SETS = 5;
+var MAX_ARMS = 3;
 (function() {
   function b64urlEncode(str) {
     var bytes = new TextEncoder().encode(str), bin = "";
@@ -3967,7 +4035,7 @@ var MAX_SETS = 5;
       }, 2600);
     });
   });
-  var CATALOG = null, SEL = [null, null];
+  var CATALOG = null, SEL = new Array(MAX_ARMS).fill(null);
   var MON2 = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
   function armTsFields(a) {
     var ts = a && a.ts, ab = a && a.ab || null;
@@ -4010,27 +4078,42 @@ var MAX_SETS = 5;
       return s + "#" + (i2 + 1);
     });
   }
+  function defaultSel(n) {
+    var sel = new Array(MAX_ARMS).fill(null);
+    if (n >= 2 && n <= MAX_ARMS) {
+      for (var i = 0; i < n; i++) sel[i] = i;
+    } else {
+      sel[0] = 0;
+    }
+    return sel;
+  }
   function armsForSelection() {
-    var chosen = [SEL[0], SEL[1]].filter(function(x) {
-      return x != null;
-    }).map(function(i) {
-      return CATALOG[i];
-    }).filter(Boolean);
-    if (!chosen.length) chosen = [CATALOG[0]];
-    var names = labelArms(chosen);
-    return chosen.map(function(a, i) {
-      var c = Object.assign({}, a);
-      c.label = names[i];
-      return c;
+    var chosen = [];
+    for (var s = 0; s < SEL.length; s++) {
+      if (SEL[s] != null && CATALOG[SEL[s]]) chosen.push({ arm: CATALOG[SEL[s]], role: s });
+    }
+    if (!chosen.length) chosen = [{ arm: CATALOG[0], role: 0 }];
+    var names = labelArms(chosen.map(function(c) {
+      return c.arm;
+    }));
+    return chosen.map(function(c, i) {
+      var a = Object.assign({}, c.arm);
+      a.label = names[i];
+      a.role = c.role;
+      return a;
     });
   }
+  var ROLE_CLS = ["A", "B", "C"];
   function armBarHTML() {
     var sets = CATALOG || [];
     var multi = sets.length >= 2;
-    var names = sets.length ? labelArms(sets) : [], bothFull = SEL[0] != null && SEL[1] != null;
+    var filled = SEL.filter(function(x) {
+      return x != null;
+    }).length;
+    var names = sets.length ? labelArms(sets) : [], allFull = filled >= MAX_ARMS;
     var chips = sets.map(function(a, i) {
-      var role = SEL[0] === i ? 0 : SEL[1] === i ? 1 : -1, dim = multi && bothFull && role < 0;
-      var cls = "armchip" + (role >= 0 ? " sel sel" + (role === 0 ? "A" : "B") : "") + (dim ? " dim" : "");
+      var role = SEL.indexOf(i), dim = multi && allFull && role < 0;
+      var cls = "armchip" + (role >= 0 ? " sel sel" + ROLE_CLS[role] : "") + (dim ? " dim" : "");
       var date = armTsFields(a).date, short = names[i], nameHtml;
       if (short.indexOf(date) === 0) nameHtml = '<b class="armname">' + esc(short) + "</b>";
       else nameHtml = '<span class="armdate">' + esc(date) + '</span> <b class="armname">' + esc(short) + "</b>";
@@ -4049,14 +4132,20 @@ var MAX_SETS = 5;
   }
   function renderView() {
     if (CATALOG && CATALOG.length === 1) {
-      SEL = [0, null];
+      SEL = [0, null, null];
       renderReport(armsForSelection());
-    } else if (SEL[0] == null && SEL[1] == null) {
+    } else if (SEL.every(function(x) {
+      return x == null;
+    })) {
       document.body.className = "";
-      document.body.innerHTML = '<p class="armempty">Nothing selected — pick an arm to view, or two to compare.</p>';
+      document.body.innerHTML = '<p class="armempty">Nothing selected — pick an arm to view, or up to ' + MAX_ARMS + " to compare.</p>";
     } else {
       renderReport(armsForSelection());
-      if (SEL[0] == null && SEL[1] != null) document.body.classList.add("soloB");
+      var firstSlot = SEL.findIndex(function(x) {
+        return x != null;
+      });
+      if (firstSlot === 1) document.body.classList.add("soloB");
+      else if (firstSlot === 2) document.body.classList.add("soloC");
     }
     var bar = armBarHTML();
     if (bar) {
@@ -4094,15 +4183,13 @@ var MAX_SETS = 5;
     if (!pick) return;
     e.preventDefault();
     var i = +pick.getAttribute("data-armpick");
-    var pos = SEL[0] === i ? 0 : SEL[1] === i ? 1 : -1;
+    var pos = SEL.indexOf(i);
     if (pos >= 0) {
       SEL[pos] = null;
-    } else if (SEL[0] == null) {
-      SEL[0] = i;
-    } else if (SEL[1] == null) {
-      SEL[1] = i;
     } else {
-      return;
+      var free = SEL.indexOf(null);
+      if (free < 0) return;
+      SEL[free] = i;
     }
     renderView();
   });
@@ -4145,11 +4232,10 @@ var MAX_SETS = 5;
     CATALOG = runsToSets(catalogToRuns(CATALOG || []).concat(fresh));
     REF = null;
     if (before === 0) {
-      SEL = CATALOG.length >= 2 ? [0, 1] : [0, null];
+      SEL = defaultSel(CATALOG.length);
     } else if (CATALOG.length > before) {
-      var bi = before;
-      if (SEL[0] == null) SEL[0] = bi;
-      else if (SEL[1] == null) SEL[1] = bi;
+      var bi = before, free = SEL.indexOf(null);
+      if (free >= 0) SEL[free] = bi;
     }
     recordSets(CATALOG).then(refreshRecent);
     return true;
@@ -4555,7 +4641,7 @@ var MAX_SETS = 5;
     document.title = (ctx.dual ? ctx.control_label + " vs " + ctx.experiment_label : ctx.control_label) + " — online restore";
     document.body.className = "hide-p95";
     document.body.innerHTML = render_body(ctx);
-    runChart({ chartData: ctx.chartData, labels: ctx.labels, dual: ctx.dual, xmaxEl: ctx.xmax_el, ctx, nodes: ctx.nodes, ctrl0: CTRL, persistCtrl });
+    runChart({ chartData: ctx.chartData, labels: ctx.labels, armKeys: ctx.armKeys, dual: ctx.dual, xmaxEl: ctx.xmax_el, ctx, nodes: ctx.nodes, ctrl0: CTRL, persistCtrl });
     initSticky();
   }
   function readJSON(file) {
@@ -4570,7 +4656,7 @@ var MAX_SETS = 5;
   }
   function renderEmpty() {
     CATALOG = [];
-    SEL = [null, null];
+    SEL = new Array(MAX_ARMS).fill(null);
     REF = null;
     document.body.className = "";
     document.body.innerHTML = "<div class='report'><p class='armempty'>" + (LOADERR ? esc(LOADERR) : "No run set loaded — add one to get started.") + "</p></div>";
@@ -4614,12 +4700,14 @@ var MAX_SETS = 5;
     if (runs && runs.length) {
       CATALOG = runsToSets(runs);
       var n = CATALOG.length;
-      if (Array.isArray(sel) && sel.length === 2) {
-        SEL = sel.map(function(x) {
-          return x == null || x < 0 || x >= n ? null : x;
-        });
+      if (Array.isArray(sel) && sel.length >= 1 && sel.length <= MAX_ARMS) {
+        SEL = new Array(MAX_ARMS).fill(null);
+        for (var si = 0; si < sel.length && si < MAX_ARMS; si++) {
+          var x = sel[si];
+          SEL[si] = x == null || x < 0 || x >= n ? null : x;
+        }
       } else {
-        SEL = n === 2 ? [0, 1] : [0, null];
+        SEL = defaultSel(n);
       }
       if (ctrl && typeof ctrl === "object") {
         CTRL = ctrl;
@@ -4645,6 +4733,7 @@ var MAX_SETS = 5;
  --grid:#e8e7e1; --axis:#c3c2b7; --border:rgba(11,11,11,0.10);
  --ctl-p50:#f4a06f; --ctl-p95:#e8712f; --ctl-p99:#b4470f;
  --lh-p50:#86b6ef;  --lh-p95:#3987e5;  --lh-p99:#184f95;
+ --c-p50:#ef9fce;   --c-p95:#cf2a92;   --c-p99:#8f1a5f;
  --good:#006300; --bad:#c02a2a;
 }
 @media (prefers-color-scheme:dark){
@@ -4653,6 +4742,7 @@ var MAX_SETS = 5;
   --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.12);
   --ctl-p50:#f4a06f; --ctl-p95:#e8712f; --ctl-p99:#b4470f;
   --lh-p50:#9ac1f2;  --lh-p95:#3987e5;  --lh-p99:#256abf;
+  --c-p50:#ef9fce;   --c-p95:#e14aa0;   --c-p99:#b83182;
   --good:#0ca30c; --bad:#e66767;
  }
 }
@@ -4741,7 +4831,7 @@ svg .pctlab{font-size:5.5px;fill:var(--muted);font-family:system-ui,sans-serif}
 .caveat{font-size:11px;color:var(--muted);margin:6px 2px 0}
 /* Gap between the stacked download tables (throughput / progress / distribution). */
 .tblgap{height:14px}
-/* Fixed layout + shared colgroup so the A/B/Δ/Δ%/p columns line up across those three tables. */
+/* Fixed layout + shared colgroup so the A | B | Δ columns line up across those three tables. */
 .tbl.dlt{table-layout:fixed}
 table.tbl{border-collapse:collapse;width:100%;font-size:12.5px;
  font-variant-numeric:tabular-nums;margin:2px 0}
@@ -4757,12 +4847,17 @@ table.tbl{border-collapse:collapse;width:100%;font-size:12.5px;
 .tbl th.grpl,.tbl td.grpl{border-left:2px solid var(--page)}
 .tbl .unit{color:var(--muted);font-size:9.5px;margin-left:1px}
 .tbl .sd{color:var(--muted);font-size:10.5px;margin-left:5px}
-/* A non-significant difference dims only the delta cells (Δ / Δ% / p), not the per-arm values. */
+/* Graded delta dimming by significance (only the delta cell dims, never the per-arm values):
+   full at p<=0.05, slightly faded when marginal (0.05<p<0.2), more faded when weak (p>=0.2). */
 .tbl td.dim{opacity:0.45}
+.tbl td.dim1{opacity:0.68}
+.tbl td.dim2{opacity:0.4}
 .tbl td.pcol{font-weight:500}
 .tbl td.dcell{white-space:nowrap}
 .tbl .pval{font-size:15px}
 .tbl .dval{font-size:15px;font-weight:700}
+/* The muted parenthetical (absolute delta + p) that trails the Δ% in the download tables. */
+.tbl .dsub{font-size:10.5px;color:var(--muted);margin-left:4px;white-space:nowrap}
 .tbl .pv{font-size:10.5px;margin-left:4px}
 .tbl .psig{color:var(--ink);font-weight:700}
 .tbl .pns{color:var(--bad);font-weight:600}
@@ -4834,14 +4929,17 @@ svg .selrect{fill:var(--ink2);opacity:0.12}
  cursor:pointer;color:var(--muted);background:var(--surface);opacity:0;transition:opacity .1s}
 .armchip:hover .armx{opacity:0.85}
 .armchip .armx:hover{opacity:1;background:var(--bad);color:#fff}
-/* Chosen arms are shaded in their comparison color (A=ctl, B=exp); once both are
-   chosen the rest dim, so it's visually clear one must be un-picked first. */
+/* Chosen arms are shaded in their comparison color (A=ctl, B=exp, C=third); once every
+   slot is full the rest dim, so it's visually clear one must be un-picked first. */
 .armchip.selA{background:color-mix(in srgb,var(--ctl-p99) 22%,var(--page));box-shadow:inset 0 0 0 1px var(--ctl-p99)}
 .armchip.selB{background:color-mix(in srgb,var(--lh-p99) 22%,var(--page));box-shadow:inset 0 0 0 1px var(--lh-p99)}
+.armchip.selC{background:color-mix(in srgb,var(--c-p99) 22%,var(--page));box-shadow:inset 0 0 0 1px var(--c-p99)}
 .armchip.dim{opacity:0.3}
 .armchip.dim .armpick{cursor:default}
-/* Dim the arm hidden by the current view (double-click cycles A / B / both). */
-body.arm-a .armchip.selB,body.arm-b .armchip.selA{opacity:0.4}
+/* Dim the arms hidden by the current view (double-click cycles all / A / B / C). When one arm
+   is isolated, fade every selected chip, then restore the active one to full opacity. */
+body.arm-a .armchip.sel,body.arm-b .armchip.sel,body.arm-c .armchip.sel{opacity:0.4}
+body.arm-a .armchip.selA,body.arm-b .armchip.selB,body.arm-c .armchip.selC{opacity:1}
 /* [+] compare tile: a dashed placeholder that opens the "add runsets" modal (paste link /
    import JSON / recently viewed). Greyed + non-opening at the catalog cap. */
 .armchip.armadd{border-style:dashed;background:transparent}
@@ -4985,9 +5083,10 @@ body.pd-open .showgraph::after{content:'hide graph \2197'}
 /* Non-sticky rule separating the Restore info section from the Workload Latency section. */
 hr.sec-sep{border:none;border-top:1px solid var(--border);margin:26px 0 2px}
 /* A solo arm renders positionally as ctl (orange). When the survivor of a comparison
-   is the slot-B arm, remap the ctl palette to the exp (blue) one so its color stays
-   stable — the report is otherwise the same single-arm view. */
-body.soloB{--ctl-p50:var(--lh-p50);--ctl-p95:var(--lh-p95);--ctl-p99:var(--lh-p99)}</style>
+   is the slot-B (or slot-C) arm, remap the ctl palette to that slot's family so its
+   color stays stable — the report is otherwise the same single-arm view. */
+body.soloB{--ctl-p50:var(--lh-p50);--ctl-p95:var(--lh-p95);--ctl-p99:var(--lh-p99)}
+body.soloC{--ctl-p50:var(--c-p50);--ctl-p95:var(--c-p95);--ctl-p99:var(--c-p99)}</style>
 </head>
 <body class='hide-p95'>
 <!-- Host injection point: a Go host replaces the RHS / the marked line with the

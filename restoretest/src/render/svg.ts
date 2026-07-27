@@ -6,8 +6,12 @@ function bake_svg(op, series, big){
   var W = 760, H = 320;                  // all charts share one size
   var x0 = 52, x1 = 690, yt = 22, yb = 284;
   var mets = ["p50","p99"];
+  // Arms actually present in this series (ctl always; exp/c only when they carry data), so the
+  // baked fallback draws however many arms the report has without a hardcoded pair.
+  var armList = ["ctl","exp","c"].filter(function(arm){
+    return mets.some(function(m){ return (series.el[arm+"_"+m] || []).length; }); });
   var keys = [];
-  mets.forEach(function(m){ ["ctl","exp"].forEach(function(arm){ keys.push([arm,m]); }); });
+  mets.forEach(function(m){ armList.forEach(function(arm){ keys.push([arm,m]); }); });
   function pts(arm,m){ return series.el[arm+"_"+m] || []; }
   var hi = [];
   keys.forEach(function(km){ pts(km[0],km[1]).forEach(function(p){ hi.push(p.m+p.s); }); });

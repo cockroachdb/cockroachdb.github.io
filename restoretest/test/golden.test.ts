@@ -20,8 +20,10 @@ const OPS = ["agg", "stockLevel", "orderStatus", "delivery", "newOrder", "paymen
 //   time_to_stall / mbps_rows — now ALSO populated for a solo arm (single-column tables); the
 //             frozen oracle only computes them for dual. Dual values are unchanged and re-checked
 //             explicitly below.
+//   armKeys — the ordered list of arms the chart should draw (A/B/C); a display concern the
+//             frozen oracle predates. labels stays {ctl,exp} for 1-2 arms, so it isn't dropped.
 const DROP: any = { runs: 1, perRun: 1, prov_details: 1, rRatio: 1, rRatioPc: 1, rRatioRuns: 1, rRatioPcRuns: 1,
-  time_to_stall: 1, mbps_rows: 1 };
+  time_to_stall: 1, mbps_rows: 1, armKeys: 1 };
 const drop = (_k: string, v: any) => (DROP[_k] ? undefined : v);
 
 // The OLD oracle parses the pre-refactor body (row/columnar); the NEW layer parses the v:2
@@ -43,12 +45,17 @@ function checkCatalog(name: string, makeOld: () => any[], makeNew: () => any[]) 
       );
     });
 
-    // The dual comparison tables are unchanged by the solo-rendering work — re-check them against
-    // the oracle byte-for-byte (they're dropped above only because solo now adds new rows).
+    // The dual A-vs-B comparison values are unchanged by the N-arm work; the row SHAPE changed
+    // (flat a/b/dsec/dpct/p -> {arms:[{v,std,n}], cmp:[{d,dpct,p}]} so a third arm can interleave),
+    // so extract the equivalent baseline+first-comparand values and re-check those against the oracle.
     it("dual time_to_stall & mbps_rows match the oracle", () => {
       if (!oldCtx.dual) return;   // solo rows are a new feature the frozen oracle predates
-      expect(JSON.stringify(newCtx.time_to_stall)).toEqual(JSON.stringify(oldCtx.time_to_stall));
-      expect(JSON.stringify(newCtx.mbps_rows)).toEqual(JSON.stringify(oldCtx.mbps_rows));
+      const newTs = (r: any) => ({ pct: r.pct, a: r.arms[0].v, a_std: r.arms[0].std, b: r.arms[1].v, b_std: r.arms[1].std, dsec: r.cmp[0].d, dpct: r.cmp[0].dpct, p: r.cmp[0].p });
+      const oldTs = (r: any) => ({ pct: r.pct, a: r.a, a_std: r.a_std, b: r.b, b_std: r.b_std, dsec: r.dsec, dpct: r.dpct, p: r.p });
+      expect(JSON.stringify(newCtx.time_to_stall.map(newTs))).toEqual(JSON.stringify(oldCtx.time_to_stall.map(oldTs)));
+      const newMb = (r: any) => ({ label: r.label, a: r.arms[0].v, a_std: r.arms[0].std, b: r.arms[1].v, b_std: r.arms[1].std, d: r.cmp[0].d, dpct: r.cmp[0].dpct, p: r.cmp[0].p });
+      const oldMb = (r: any) => ({ label: r.label, a: r.a, a_std: r.a_std, b: r.b, b_std: r.b_std, d: r.d, dpct: r.dpct, p: r.p });
+      expect(JSON.stringify(newCtx.mbps_rows.map(newMb))).toEqual(JSON.stringify(oldCtx.mbps_rows.map(oldMb)));
     });
 
     // NOTE: the HTML render generators (render_body, tables, bake_svg) are intentionally NO
