@@ -66,6 +66,10 @@ There is one body format (`v: 2`); there is no row-format or legacy path from th
   the repetition).
 - **Do not emit an `agg` / overall op.** The UI derives it as the qps-weighted mean of the
   per-op latencies.
+- **`qps` counts completed OPERATIONS, not queries** — an op (`newOrder`, `payment`, …) is a
+  transaction of several queries. The field keeps the name `qps` so existing links and
+  producers stay valid; the report displays it as **tps** and titles the charts
+  "<op> Transaction Latency".
 - **`download` has exactly three keys: `pct`, `mbps`, `node_remote_mb`.** Do not emit `l0_mb`,
   `read_amp`, or other extra series — the report ignores them and they only bloat the slug.
 - **The node count is `node_remote_mb.length`.** Emit one column per node and the report has
@@ -88,23 +92,42 @@ Any subset of the four keys may be present; unknown keys are ignored.
 
 The report renders `available` / `functional` / `healthy` as extra rows in the **progress**
 table, interleaved with the download-% crossings in chronological order (one timeline).
-`restored` gets no row of its own — the 100% download crossing already is it — but it *is*
-the denominator of the overall throughput below. If `restored` is omitted, the report falls
-back to each run's own 100% crossing.
+`restored` gets no row of its own — the 100% download crossing already is it, and the last row
+says `100% restored`. It *is* the denominator of the `restored` throughput below. If `restored`
+is omitted, the report falls back to each run's own 100% crossing.
 
-**`metadata.total_bytes`** — the total size of the restored data, in bytes. With it (and the
-node count) the report adds whole-operation rows to the **throughput** table, all in
-MB/s/node, where MB is 2^20 bytes to match `download.mbps` and `node_remote_mb`:
+**`metadata.total_bytes`** — the total size of the restored data, in bytes, cluster-wide (the
+report divides by the node count itself). MB below is 2^20 bytes, matching `download.mbps` and
+`node_remote_mb`.
 
-| row | value |
-| --- | --- |
-| `overall` | `total_bytes / time-to-restored / nodes` |
-| `to available` / `to functional` / `to healthy` | `total_bytes / time-to-<milestone> / nodes` |
+> **What to measure.** The data the restore actually landed — for a non-online restore, final
+> disk usage minus pre-restore disk usage. Do **not** report a count of bytes still in external
+> storage taken partway through: by then linking may already have ingested files and compaction
+> may have rewritten them. (Online restore muddies the disk delta a little, since the workload
+> is writing at the same time, but it is still the far better number.) This is the only figure
+> the report will divide by a wall clock, so a wrong `total_bytes` makes every throughput and
+> cost number wrong in the same direction.
 
-`overall` is the headline: unlike `avg disk`, which averages only the intervals in which the
-disk was writing, it includes the ramp before the first byte lands and so is the rate the
-operation actually achieved. The `to <milestone>` rows say how fast the restore delivered a
-*usable* database rather than how fast it moved bytes, so they run well ahead of `overall`.
+With it (and the node count) the report adds:
+
+| table | row | value |
+| --- | --- | --- |
+| throughput | `restored` | `total_bytes / time-to-restored / nodes`, in MB/s/node |
+| progress | every row | the row's elapsed also as `elapsed x nodes / total_bytes`, in min/TB/node |
+
+`restored` is the headline throughput: unlike `disk avg rate`, which averages only the intervals
+in which the disk was writing, it includes the ramp before the first byte lands and so is the
+rate the operation actually achieved.
+
+The progress table's min/TB/node figures are the same quantity with the terms rearranged (a
+100 MB/s/node restore is ~175 min/TB/node), so the completion row's cost is exactly
+`1048576 / 60 / restored`. Minutes per TB because that is the scale restores are discussed at —
+"about 3 hours per TB per node" reads; the per-second-per-GB form of the same number does not.
+The usability milestones get no throughput rows of their own: reaching one isn't moving the
+dataset (most of it hasn't moved yet), so a MB/s reading there would look like a wild transfer
+rate. As a *cost* — how long per TB per node to reach a usable database — it belongs next to the
+wall clock it normalizes. Those normalized values are also what the progress table's Δ column
+compares, since raw seconds don't compare across arms that restored different amounts of data.
 
 `total_bytes` is config, not a measurement — repeat the same value on every run of a set.
 

@@ -1,13 +1,16 @@
 // The optional format additions: the `timings` milestone block and metadata.total_bytes.
-// Covers what they add (progress-table milestone rows, whole-operation throughput rows, the
-// details-table cluster/dataset rows), that the node count comes from the download columns
-// rather than the opaque test name, and that everything degrades cleanly when absent.
+// Covers what they add (progress-table milestone rows and their min/TB/node costs, the
+// whole-operation throughput row, the details-table cluster/dataset rows), that the node count
+// comes from the download columns rather than the opaque test name, and that everything
+// degrades cleanly when absent.
 import { describe, it, expect } from "vitest";
 import { analyze } from "../src/compute/analyze";
 import { prov_table, time_to_stall_table, mbps_table } from "../src/render/tables";
+import { _num } from "../src/format/format";
 
 const GIB = 1024 * 1024 * 1024;
-const TOTAL_BYTES = 300 * GIB; // -> 307200 MB
+const TOTAL_BYTES = 300 * GIB;
+const SIZE_MB = 300 * 1024;   // the size every whole-operation figure divides: 307200 MB
 const NODES = 5;
 
 // Download reaches 100% at el=90. The test NAME deliberately claims a different node count
@@ -58,34 +61,48 @@ describe("timings -> progress rows", () => {
   it("interleaves milestones with the download-% rows in chronological order", () => {
     // available 15s, functional 30s, then 50% and healthy both at 60s, then 90%/100% at 90s.
     expect(rowLabels(time_to_stall_table(full()))).toEqual(
-      ["available", "functional", "50%", "healthy", "90%", "100%"],
+      ["available", "functional", "50%", "healthy", "90%", "100% restored"],
     );
   });
 
   it("drops the milestone rows entirely when no run reports them", () => {
     expect(analyze([arm("A", [body()])]).milestones).toEqual([]);
-    expect(rowLabels(time_to_stall_table(bare()))).toEqual(["50%", "90%", "100%"]);
+    expect(rowLabels(time_to_stall_table(bare()))).toEqual(["50%", "90%", "100% restored"]);
+  });
+
+  // Every progress cell also carries the elapsed normalized by the run's dataset. Linear in
+  // elapsed, so it's the row's mean scaled: t * nodes * 1048576 / 60 / SIZE_MB.
+  const minPerTB = (t: number) => (t * NODES * 1048576) / (60 * SIZE_MB);
+  it("trails each elapsed with its min/TB/node cost", () => {
+    const html = time_to_stall_table(full());
+    expect(html).toContain("(" + _num(minPerTB(15)) + " min/TB/node)");  // available @15s -> 4.3
+    expect(html).toContain("(" + _num(minPerTB(90)) + " min/TB/node)");  // 100% restored @90s -> 26
+    // The completion row's cost is the `restored` throughput row rearranged, not a new number.
+    const mbps = (full() as any).mbps_rows[0].arms[0].v;
+    expect(minPerTB(90)).toBeCloseTo(1048576 / 60 / mbps, 6);
+  });
+
+  it("omits the min/TB/node cost when the run reports no size", () => {
+    const html = time_to_stall_table(analyze([arm("A", [body({ timings: TIMINGS })])]));
+    expect(html).toContain("</span>");   // rows still render
+    expect(html).not.toContain("min/TB");
   });
 });
 
 describe("throughput rows", () => {
-  it("leads with overall = total size / time-to-restored / node", () => {
+  it("leads with the restored rate = total_bytes / time-to-restored / node", () => {
     const ctx: any = full();
     expect(ctx.mbps_rows[0].key).toBe("overall");
-    expect(ctx.mbps_rows[0].arms[0].v).toBeCloseTo(307200 / 90 / NODES, 6); // 682.67
+    expect(ctx.mbps_rows[0].arms[0].v).toBeCloseTo(SIZE_MB / 90 / NODES, 6); // 682.67
   });
 
-  it("adds a per-milestone effective rate over the same total size", () => {
-    const byKey: any = {};
-    (full() as any).mbps_rows.forEach((r: any) => (byKey[r.key] = r));
-    expect(byKey.to_available.arms[0].v).toBeCloseTo(307200 / 15 / NODES, 6);
-    expect(byKey.to_functional.arms[0].v).toBeCloseTo(307200 / 30 / NODES, 6);
-    expect(byKey.to_healthy.arms[0].v).toBeCloseTo(307200 / 60 / NODES, 6);
+  it("gives the usability milestones no rows — the progress table carries them", () => {
+    const keys = (full() as any).mbps_rows.map((r: any) => r.key);
+    expect(keys.some((k: string) => k.startsWith("to_"))).toBe(false);
   });
 
-  it("keeps the disk rates, below the whole-operation rows", () => {
-    expect((full() as any).mbps_rows.map((r: any) => r.key))
-      .toEqual(["overall", "to_available", "to_functional", "to_healthy", "avg", "peak"]);
+  it("keeps the disk rates, below the whole-operation row", () => {
+    expect((full() as any).mbps_rows.map((r: any) => r.key)).toEqual(["overall", "avg", "peak"]);
     // mbps readings are [40,50,60] with the first non-zero one dropped -> avg 55, peak 60.
     const byKey: any = {};
     (full() as any).mbps_rows.forEach((r: any) => (byKey[r.key] = r));
@@ -97,10 +114,10 @@ describe("throughput rows", () => {
     const t: any = { available: 15, functional: 30, healthy: 60 };
     const ctx: any = analyze([arm("A", [body({ timings: t, totalBytes: TOTAL_BYTES })])]);
     expect(ctx.mbps_rows[0].key).toBe("overall");
-    expect(ctx.mbps_rows[0].arms[0].v).toBeCloseTo(307200 / 90 / NODES, 6);
+    expect(ctx.mbps_rows[0].arms[0].v).toBeCloseTo(SIZE_MB / 90 / NODES, 6);
   });
 
-  it("drops the whole-operation rows without total_bytes, keeping the disk rates", () => {
+  it("drops the whole-operation row without total_bytes, keeping the disk rates", () => {
     const ctx: any = analyze([arm("A", [body({ timings: TIMINGS })])]);
     expect(ctx.mbps_rows.map((r: any) => r.key)).toEqual(["avg", "peak"]);
     expect(ctx.milestones.length).toBe(3); // milestones don't need a size
@@ -108,8 +125,10 @@ describe("throughput rows", () => {
 
   it("renders per-node units in the cells and bare labels in the column", () => {
     const html = mbps_table(full());
-    expect(rowLabels(html)).toEqual(["overall", "to available", "to functional", "to healthy", "avg disk", "peak disk"]);
-    expect(html).toContain('<span class="unit">MB/s/node</span>');
+    expect(rowLabels(html)).toEqual(["restored", "disk avg rate", "disk peak rate"]);
+    // Every row is a real transfer rate, so the whole column is one unit.
+    const units = Array.from(html.matchAll(/<span class="unit">([^<]*)<\/span>/g)).map((m) => m[1]);
+    expect(units).toEqual(["MB/s/node", "MB/s/node", "MB/s/node"]);
   });
 });
 

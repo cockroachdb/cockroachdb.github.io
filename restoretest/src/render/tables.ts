@@ -208,8 +208,9 @@ function prov_table(ctx){
   out.push(row("ran", function(d){return esc(d.time || "—");}));
   out.push(row("test", function(d){return '<code>'+esc(d.test || "—")+'</code>';}));
   // Cluster/dataset shape. Both come off the run bodies (node count = how many per-node
-  // download columns; size = metadata.total_bytes) — never parsed out of the opaque test
-  // name — and each is shown only when some arm reports it. Separate rows so a shared node
+  // download columns; size = metadata.total_bytes, the data the restore landed) — never parsed
+  // out of the opaque test name — and each is shown only when some arm reports it. Separate
+  // rows so a shared node
   // count still merges when the dataset sizes differ, and vice versa.
   if (details.some(function(pair){ return pair[1].nodes != null; }))
     out.push(row("nodes", function(d){return d.nodes != null ? esc(d.nodes) : "—";},
@@ -263,12 +264,13 @@ function _dlDelta(d, goodPos, deltaVal, deltaUnit){
   var sub = '(' + absStr + (pTxt ? (', <span class="'+pcls+'">'+pTxt+'</span>') : '') + ')';
   return '<td'+dc+'><span class="dval" style="color:var('+vr+')">'+_pct(d.dpct)+'</span><span class="dsub">'+sub+'</span></td>';
 }
-// o: {label, arms:[{v,std,n}], cmp:[{d,dpct,p}], goodPos, fmtVal(v,sd,n)->cell, deltaVal(d)->str,
-//     deltaUnit, cls?} — cls is an extra class on the label cell (e.g. " mstone").
+// o: {label, arms:[{v,std,n}], cmp:[{d,dpct,p}], goodPos, fmtVal(v,sd,n,i)->cell (i = column
+//     index among the SHOWN arms), deltaVal(d)->str, deltaUnit, cls?} — cls is an extra class
+//     on the label cell (e.g. " mstone").
 function _dlRow(o){
   var cells = "";
   for (var i=0;i<o.arms.length;i++){ var A = o.arms[i];
-    cells += '<td>'+o.fmtVal(A.v, A.std, A.n)+'</td>';
+    cells += '<td>'+o.fmtVal(A.v, A.std, A.n, i)+'</td>';
     if (i>0) cells += _dlDelta(o.cmp[i-1], o.goodPos, o.deltaVal, o.deltaUnit);
   }
   return '<tr><td class="l stage'+(o.cls||"")+'">'+o.label+'</td>'+cells+'</tr>';
@@ -286,10 +288,20 @@ function _dlPick(row, armKeys, shown){
 // (available / functional / healthy). They are one timeline, so they interleave in
 // chronological order of the BASELINE arm's mean rather than being stacked in two blocks — a
 // milestone is only meaningful next to how far the download had got. Milestone labels carry
-// an extra class so they still read as a different kind of row. `restored` gets no row: the
-// 100% crossing already is it.
+// an extra class so they still read as a different kind of row. `restored` gets no row of its
+// own: the 100% crossing IS it, and says so.
+//
+// Each value also carries that elapsed normalized by the run's own dataset — minutes per TB per
+// node (row.cost, absent when a run reports no size/node count). That is what makes this one
+// table enough: every milestone's cost sits next to its wall clock, so the throughput table
+// needs no row for it, and the completion row's cost is the `restored` throughput with the
+// terms rearranged. The Δ column compares the NORMALIZED values whenever they exist (see
+// _progress_row) — seconds alone don't compare across arms that moved different amounts of
+// data — and falls back to comparing seconds when they don't.
 function time_to_stall_table(ctx, armMode?){
-  var rows = (ctx.time_to_stall || []).map(function(r){ return {label:r.pct+'%', cls:"", row:r}; })
+  // The 100% crossing is the completion marker, so name it as one.
+  var pctLabel = function(pct){ return pct >= 100 ? '100% restored' : (pct+'%'); };
+  var rows = (ctx.time_to_stall || []).map(function(r){ return {label:pctLabel(r.pct), cls:"", row:r}; })
     .concat((ctx.milestones || []).map(function(r){ return {label:esc(r.label), cls:" mstone", row:r}; }));
   if (!rows.length) return "";
   // Rows with no baseline reading sort last, keeping their declared order among themselves.
@@ -300,27 +312,37 @@ function time_to_stall_table(ctx, armMode?){
   });
   rows.sort(function(a, b){ return (a.k - b.k) || (a.i - b.i); });
   var S = _dlShown(ctx, armMode);
-  var secCell = function(v, sd, n){ if (v === null || v === undefined) return "–";
+  var costUnit = 'min/TB'+((ctx.nodes && ctx.nodes > 1) ? '/node' : '');
+  // The seconds, then (when the row is normalizable) the same instant as a size-normalized cost.
+  var secCell = function(cost){ return function(v, sd, n, i){
+    if (v === null || v === undefined) return "–";
     var s = (n > 1) ? '<span class="sd">±'+(sd||0).toFixed(0)+'</span>' : "";
-    return '<span class="pval">'+v.toFixed(0)+'</span><span class="unit">s</span>'+s; };
+    var cv = cost ? cost.arms[i].v : null;
+    var sub = (cv != null) ? '<span class="dsub">('+_num(cv)+' '+costUnit+')</span>' : "";
+    return '<span class="pval">'+v.toFixed(0)+'</span><span class="unit">s</span>'+s+sub; }; };
   var out = [_dlHead("Progress", S.shown, ctx.labels, " elapsed")];
-  rows.forEach(function(e){ var pk = _dlPick(e.row, S.armKeys, S.shown);
-    out.push(_dlRow({label:e.label, cls:e.cls, arms:pk.arms, cmp:pk.cmp, goodPos:false,
-      fmtVal:secCell, deltaVal:function(d){return _sms(d);}, deltaUnit:'<span class="unit">s</span>'}));
+  rows.forEach(function(e){
+    var pk = _dlPick(e.row, S.armKeys, S.shown);
+    // Compare normalized where we can, seconds otherwise — the Δ unit follows.
+    var ct = e.row.cost ? _dlPick(e.row.cost, S.armKeys, S.shown) : null;
+    out.push(_dlRow({label:e.label, cls:e.cls, arms:pk.arms, cmp:(ct ? ct.cmp : pk.cmp), goodPos:false,
+      fmtVal:secCell(ct), deltaVal:function(d){return _sms(d);},
+      deltaUnit:'<span class="unit">'+(ct ? costUnit : 's')+'</span>'}));
   });
   out.push('</tbody></table>');
   return out.join("");
 }
 // Download throughput (MB/s). More MB/s is better (positive Δ green). Every value is
 // per-node: the disk rows come from the generator already divided by nodes (same source as
-// the download chart's MB/s axis), and the whole-operation rows divide by the node count in
-// analyze(). So the unit — not the row label — carries the "/node", and every row in the
-// column is directly comparable.
+// the download chart's MB/s axis), and `restored` divides by the node count in analyze(). So
+// the unit — not the row label — carries the "/node", and every row in the column is directly
+// comparable.
 //
-// Rows, in analyze() order: `overall` (dataset / wall clock to restored / node — the honest
-// headline), then `to <milestone>` (dataset / time to that usability milestone / node), then
-// the raw `avg disk` / `peak disk` write rates, which only cover the intervals in which the
-// disk was writing and so run ahead of the overall figure.
+// Rows, in analyze() order: `restored` (dataset / wall clock to restored / node — the honest
+// headline), then the raw `disk avg rate` / `disk peak rate` write rates, which only cover the
+// intervals in which the disk was writing and so run ahead of the restored figure. Every row
+// here is real byte movement; the usability milestones are not, and stay in the progress table
+// as elapsed + min/TB/node (the same quantity as `restored`, rearranged).
 function mbps_table(ctx, armMode?){
   if (!ctx.mbps_rows || !ctx.mbps_rows.length) return "";
   var S = _dlShown(ctx, armMode);

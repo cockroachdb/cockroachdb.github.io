@@ -56,11 +56,13 @@ function checkCatalog(name: string, makeOld: () => any[], makeNew: () => any[]) 
       const newTs = (r: any) => ({ pct: r.pct, a: r.arms[0].v, a_std: r.arms[0].std, b: r.arms[1].v, b_std: r.arms[1].std, dsec: r.cmp[0].d, dpct: r.cmp[0].dpct, p: r.cmp[0].p });
       const oldTs = (r: any) => ({ pct: r.pct, a: r.a, a_std: r.a_std, b: r.b, b_std: r.b_std, dsec: r.dsec, dpct: r.dpct, p: r.p });
       expect(JSON.stringify(newCtx.time_to_stall.map(newTs))).toEqual(JSON.stringify(oldCtx.time_to_stall.map(oldTs)));
-      // mbps_rows now leads with the whole-operation rows (overall / to <milestone>), which
-      // need metadata.total_bytes + `timings` these fixtures don't carry, so none are emitted
-      // here. The oracle's two rows are the disk rates, whose math is untouched — match them
-      // by `key` and compare values. Labels are display strings ("avg MB/s" -> "avg disk",
-      // since the unit moved into the cell) and are deliberately not asserted.
+      // mbps_rows now leads with the whole-operation `restored` row, which needs a
+      // metadata.total_bytes these fixtures don't carry, so it isn't emitted here. The oracle's
+      // two rows are the disk rates, whose math is untouched — match them by `key` and compare
+      // values. Labels are display strings ("avg MB/s" -> "disk avg rate", since the unit moved
+      // into the cell) and are deliberately not asserted. time_to_stall's cmp is likewise still
+      // the seconds-based comparison the oracle computes: the table prefers the min/TB/node one
+      // (row.cost), which these size-less fixtures don't get.
       const newMb = (r: any) => ({ key: r.key, a: r.arms[0].v, a_std: r.arms[0].std, b: r.arms[1].v, b_std: r.arms[1].std, d: r.cmp[0].d, dpct: r.cmp[0].dpct, p: r.cmp[0].p });
       const oldMb = (r: any, i: number) => ({ key: ["avg", "peak"][i], a: r.a, a_std: r.a_std, b: r.b, b_std: r.b_std, d: r.d, dpct: r.dpct, p: r.p });
       const disk = newCtx.mbps_rows.filter((r: any) => r.key === "avg" || r.key === "peak");

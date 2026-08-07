@@ -117,9 +117,9 @@ function _dl_at(dl, el){
 // The restore milestones `timings` reports, in the order they occur. `restored` is the
 // completion marker; the three before it are usability thresholds — see RunTimings.
 var MILESTONES = ["available", "functional", "healthy", "restored"];
-// The three that get their own progress/throughput rows. `restored` is deliberately not one:
-// the 100% download crossing is already that row. It rides along as the denominator of the
-// overall throughput instead.
+// The three that get their own progress rows. `restored` is deliberately not one: the 100%
+// download crossing is already that row. It rides along as the denominator of the overall
+// throughput instead.
 var USABILITY_MILESTONES = ["available", "functional", "healthy"];
 
 // The optional run-level facts that ride alongside the sample series: the `timings`
@@ -127,6 +127,12 @@ var USABILITY_MILESTONES = ["available", "functional", "healthy"];
 // node count — which is simply how many per-node download columns the run carries. The test
 // NAME is opaque; nothing is ever parsed out of it. Every field is optional: absent -> null,
 // and the rows that need it are dropped rather than guessed at.
+//
+// The size is the reported total_bytes and nothing else. Deriving it from the download's own
+// per-node remaining-MB columns was tried and is wrong: that counts external bytes still to
+// fetch partway through, by which point linking may already have ingested files and compaction
+// may have rewritten them. total_bytes is what the restore actually landed (see
+// summary_report_spec.md §1.1) — the only figure a throughput number can honestly divide.
 function run_info(run){
   var md = (run && run.metadata) || {};
   // Spec puts `timings` at the body level; also accept it under metadata, since it is a

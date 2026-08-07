@@ -87,8 +87,8 @@ function toOldBody(d: RunData, columnar: boolean) {
 // Only the flat-run builders (dualRuns/soloRuns) emit these — the golden catalogs stay on the
 // pre-addition body so the frozen oracle remains directly comparable.
 // Sized to match the synthetic download: ~50 MB/s/node x 5 nodes x 90s ~= 22 GB. Keeping it
-// consistent means the rendered table has the real-world ordering, where `overall` (which
-// includes the ramp before the disk starts writing) sits just below `avg disk`.
+// consistent means the rendered table has the real-world ordering, where `restored` (which
+// includes the ramp before the disk starts writing) sits just below `disk avg rate`.
 export const TOTAL_BYTES = 20 * 1024 * 1024 * 1024; // 20 GiB
 function runTimings(seed: number) {
   const r = rng(seed ^ 0x5eed);

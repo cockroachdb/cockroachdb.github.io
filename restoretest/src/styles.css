@@ -129,7 +129,8 @@ table.tbl{border-collapse:collapse;width:100%;font-size:12.5px;
 .tbl td.dcell{white-space:nowrap}
 .tbl .pval{font-size:15px}
 .tbl .dval{font-size:15px;font-weight:700}
-/* The muted parenthetical (absolute delta + p) that trails the Δ% in the download tables. */
+/* The muted parenthetical trailing a value in the download tables: the absolute delta + p in a
+   Δ cell, the min/TB/node cost in a progress cell. nowrap so it wraps whole in narrow columns. */
 .tbl .dsub{font-size:10.5px;color:var(--muted);margin-left:4px;white-space:nowrap}
 .tbl .pv{font-size:10.5px;margin-left:4px}
 .tbl .psig{color:var(--ink);font-weight:700}

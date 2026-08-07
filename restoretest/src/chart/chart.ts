@@ -364,7 +364,7 @@ export function runChart(RC){
          for(var qv=0;qv<=qtop+1e-9;qv+=qstep)
            s.push('<text class="y2tick" x="'+(x1+4)+'" y="'+(Yq(qv)+2).toFixed(1)+'" text-anchor="start">'+Math.round(qv)+'</text>');
          var qtx=x1+32;
-         s.push('<text class="axtitle" transform="rotate(-90 '+qtx+' '+((yt+yb)/2)+')" x="'+qtx+'" y="'+((yt+yb)/2)+'" text-anchor="middle">qps</text>');
+         s.push('<text class="axtitle" transform="rotate(-90 '+qtx+' '+((yt+yb)/2)+')" x="'+qtx+'" y="'+((yt+yb)/2)+'" text-anchor="middle">tps</text>');
        }
        ARMS.forEach(function(a){ if(!armOn(a))return; var col=COL(a,'p95');
          var drawq=function(arr,key){ if(!arr||!arr.length)return null;
@@ -378,7 +378,7 @@ export function runChart(RC){
          } else {
            var c=drawq(qPick(a), null);
            if(c){ var lp=c[c.length-1], ly=Math.min(Math.max(Yq(lp.y),yt+6),yb-4);
-             s.push('<text class="endlab" x="'+(X(lp.x)-2).toFixed(1)+'" y="'+(ly-2).toFixed(1)+'" text-anchor="end" style="fill:'+col+'">qps</text>'); }
+             s.push('<text class="endlab" x="'+(X(lp.x)-2).toFixed(1)+'" y="'+(ly-2).toFixed(1)+'" text-anchor="end" style="fill:'+col+'">tps</text>'); }
          }
        });
      }

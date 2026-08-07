@@ -27,6 +27,7 @@ function measure() {
   dash.style.setProperty("--dash-arm-h", armH.toFixed(1) + "px");
   if (graph && sentinel) {
     graph.style.height = "";          // reset to natural to measure the full height
+    graph.style.marginBottom = "";
     graph.classList.remove("stuck");
     fullH = graph.getBoundingClientRect().height;
     // The graph pins at top:armH (just under the arm bar). The sentinel sits just above the graph
@@ -44,9 +45,18 @@ function apply() {
   const h = fullH - t * range;
   if (t <= 0) {
     graph.style.height = "";
+    graph.style.marginBottom = "";
     graph.classList.remove("stuck");
   } else {
     graph.style.height = h.toFixed(1) + "px";
+    // Keep the FLOW box at its full height (the shrink is given back as margin) so nothing
+    // below moves up while the graph squishes. Height alone would pull the whole document up
+    // by the pixels the graph just gave back, on top of the scroll itself: content would slide
+    // under the pinned strip at 1px per scrolled px, vanishing long before the strip is
+    // compact. Reserving the space makes the graph's shrinking bottom edge and the content
+    // below it track each other exactly — the squish completes just as the first row reaches
+    // the strip, and only then does anything start scrolling behind it.
+    graph.style.marginBottom = (fullH - h).toFixed(1) + "px";
     graph.classList.add("stuck"); // squish the SVG + drop axis text/grid while collapsing
   }
   // Publish the graph's current bottom so the control bars sit right under it as it shrinks.

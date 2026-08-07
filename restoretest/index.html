@@ -1170,31 +1170,63 @@ function analyze(arms) {
       return { v: e.s.mean, std: e.s.std, n: e.vals.length };
     }), cmp: cmp2 };
   }
+  function _cost_k(inf) {
+    return inf && inf.total_mb && inf.nodes ? inf.nodes * 1048576 / (60 * inf.total_mb) : null;
+  }
+  function _progress_row(perArm) {
+    var st = _dlStatsN(perArm.map(function(vals) {
+      return vals.map(function(x) {
+        return x.t;
+      });
+    }));
+    var known = perArm.every(function(vals) {
+      return vals.every(function(x) {
+        return x.k != null;
+      });
+    });
+    var any = perArm.some(function(vals) {
+      return vals.length > 0;
+    });
+    var cost = known && any ? _dlStatsN(perArm.map(function(vals) {
+      return vals.map(function(x) {
+        return x.t * x.k;
+      });
+    })) : null;
+    return { arms: st.arms, cmp: st.cmp, cost };
+  }
+  function _stall_vals(runs, info, pct) {
+    var out = [];
+    runs.forEach(function(run, i) {
+      var s = crossing_sample(run, pct);
+      if (s !== null) out.push({ t: s.el, k: _cost_k(info[i]) });
+    });
+    return out;
+  }
   var time_to_stall = [];
   stall_pcts.forEach(function(pct) {
-    var st = _dlStatsN(arm_run_lists.map(function(runs) {
-      return _stall_elapsed(runs, pct);
+    var r = _progress_row(arm_run_lists.map(function(runs, ai2) {
+      return _stall_vals(runs, arm_info_lists[ai2], pct);
     }));
-    if (st.arms.length === 1 && st.arms[0].v === null) return;
-    time_to_stall.push({ pct, arms: st.arms, cmp: st.cmp });
+    if (r.arms.length === 1 && r.arms[0].v === null) return;
+    time_to_stall.push({ pct, arms: r.arms, cmp: r.cmp, cost: r.cost });
   });
-  function _milestone_elapsed(info, key) {
+  function _milestone_vals(info, key) {
     var out = [];
     info.forEach(function(x) {
       var v = x.timings[key];
-      if (v != null) out.push(v);
+      if (v != null) out.push({ t: v, k: _cost_k(x) });
     });
     return out;
   }
   var milestones = [];
   USABILITY_MILESTONES.forEach(function(key) {
-    var st = _dlStatsN(arm_info_lists.map(function(info) {
-      return _milestone_elapsed(info, key);
+    var r = _progress_row(arm_info_lists.map(function(info) {
+      return _milestone_vals(info, key);
     }));
-    if (!st.arms.some(function(a) {
+    if (!r.arms.some(function(a) {
       return a.v !== null;
     })) return;
-    milestones.push({ key, label: key, arms: st.arms, cmp: st.cmp });
+    milestones.push({ key, label: key, arms: r.arms, cmp: r.cmp, cost: r.cost });
   });
   function _run_mbps(run) {
     var pts = [];
@@ -1258,15 +1290,9 @@ function analyze(arms) {
     return { key, label, arms: st.arms, cmp: st.cmp };
   }
   var mbps_rows = [];
-  var overall = _eff_row("overall", "overall", _restored_at);
+  var overall = _eff_row("overall", "restored", _restored_at);
   if (overall) mbps_rows.push(overall);
-  USABILITY_MILESTONES.forEach(function(key) {
-    var row = _eff_row("to_" + key, "to " + key, function(run, inf) {
-      return inf.timings[key];
-    });
-    if (row) mbps_rows.push(row);
-  });
-  [["avg", "avg disk", _vmean], ["peak", "peak disk", _vmax]].forEach(function(pr) {
+  [["avg", "disk avg rate", _vmean], ["peak", "disk peak rate", _vmax]].forEach(function(pr) {
     var st = _dlStatsN(arm_run_lists.map(function(runs) {
       return _mbps_per_run(runs, pr[2]);
     }));
@@ -1697,7 +1723,7 @@ function _dlRow(o) {
   var cells = "";
   for (var i = 0; i < o.arms.length; i++) {
     var A = o.arms[i];
-    cells += "<td>" + o.fmtVal(A.v, A.std, A.n) + "</td>";
+    cells += "<td>" + o.fmtVal(A.v, A.std, A.n, i) + "</td>";
     if (i > 0) cells += _dlDelta(o.cmp[i - 1], o.goodPos, o.deltaVal, o.deltaUnit);
   }
   return '<tr><td class="l stage' + (o.cls || "") + '">' + o.label + "</td>" + cells + "</tr>";
@@ -1708,8 +1734,11 @@ function _dlPick(row, armKeys, shown) {
   return { arms: [row.arms[j]], cmp: [] };
 }
 function time_to_stall_table(ctx, armMode) {
+  var pctLabel = function(pct) {
+    return pct >= 100 ? "100% restored" : pct + "%";
+  };
   var rows = (ctx.time_to_stall || []).map(function(r) {
-    return { label: r.pct + "%", cls: "", row: r };
+    return { label: pctLabel(r.pct), cls: "", row: r };
   }).concat((ctx.milestones || []).map(function(r) {
     return { label: esc(r.label), cls: " mstone", row: r };
   }));
@@ -1723,25 +1752,31 @@ function time_to_stall_table(ctx, armMode) {
     return a.k - b.k || a.i - b.i;
   });
   var S = _dlShown(ctx, armMode);
-  var secCell = function(v, sd, n) {
-    if (v === null || v === void 0) return "–";
-    var s = n > 1 ? '<span class="sd">±' + (sd || 0).toFixed(0) + "</span>" : "";
-    return '<span class="pval">' + v.toFixed(0) + '</span><span class="unit">s</span>' + s;
+  var costUnit = "min/TB" + (ctx.nodes && ctx.nodes > 1 ? "/node" : "");
+  var secCell = function(cost) {
+    return function(v, sd, n, i) {
+      if (v === null || v === void 0) return "–";
+      var s = n > 1 ? '<span class="sd">±' + (sd || 0).toFixed(0) + "</span>" : "";
+      var cv = cost ? cost.arms[i].v : null;
+      var sub = cv != null ? '<span class="dsub">(' + _num(cv) + " " + costUnit + ")</span>" : "";
+      return '<span class="pval">' + v.toFixed(0) + '</span><span class="unit">s</span>' + s + sub;
+    };
   };
   var out = [_dlHead("Progress", S.shown, ctx.labels, " elapsed")];
   rows.forEach(function(e) {
     var pk = _dlPick(e.row, S.armKeys, S.shown);
+    var ct = e.row.cost ? _dlPick(e.row.cost, S.armKeys, S.shown) : null;
     out.push(_dlRow({
       label: e.label,
       cls: e.cls,
       arms: pk.arms,
-      cmp: pk.cmp,
+      cmp: ct ? ct.cmp : pk.cmp,
       goodPos: false,
-      fmtVal: secCell,
+      fmtVal: secCell(ct),
       deltaVal: function(d) {
         return _sms(d);
       },
-      deltaUnit: '<span class="unit">s</span>'
+      deltaUnit: '<span class="unit">' + (ct ? costUnit : "s") + "</span>"
     }));
   });
   out.push("</tbody></table>");
@@ -1933,14 +1968,14 @@ function render_body(ctx) {
   }
   function op_heading(op) {
     if (op === "agg") return "Overall Workload Latency";
-    return op[0].toUpperCase() + op.slice(1) + " Query Latency";
+    return op[0].toUpperCase() + op.slice(1) + " Transaction Latency";
   }
   A.push("<hr class='sec-sep'>");
   A.push("<div class='ctrl header stick stick-latency'><span class='htitle'>Workload Latency</span><span class='seg'>");
   A.push("<button data-pct='p50' class='on'>p50</button>");
   A.push("<button data-pct='p95'>p95</button>");
   A.push("<button data-pct='p99' class='on'>p99</button>");
-  A.push("<button data-qps>qps</button></span>");
+  A.push("<button data-qps>tps</button></span>");
   A.push("<span class='seg'>");
   A.push("<button data-scale='linear' class='on'>linear</button>");
   A.push("<button data-scale='log'>log</button></span>");
@@ -2435,7 +2470,7 @@ function runChart(RC) {
             for (var qv = 0; qv <= qtop + 1e-9; qv += qstep)
               s.push('<text class="y2tick" x="' + (x1 + 4) + '" y="' + (Yq(qv) + 2).toFixed(1) + '" text-anchor="start">' + Math.round(qv) + "</text>");
             var qtx = x1 + 32;
-            s.push('<text class="axtitle" transform="rotate(-90 ' + qtx + " " + (yt + yb) / 2 + ')" x="' + qtx + '" y="' + (yt + yb) / 2 + '" text-anchor="middle">qps</text>');
+            s.push('<text class="axtitle" transform="rotate(-90 ' + qtx + " " + (yt + yb) / 2 + ')" x="' + qtx + '" y="' + (yt + yb) / 2 + '" text-anchor="middle">tps</text>');
           }
           ARMS.forEach(function(a) {
             if (!armOn(a)) return;
@@ -2461,7 +2496,7 @@ function runChart(RC) {
               var c = drawq(qPick(a), null);
               if (c) {
                 var lp = c[c.length - 1], ly = Math.min(Math.max(Yq(lp.y), yt + 6), yb - 4);
-                s.push('<text class="endlab" x="' + (X(lp.x) - 2).toFixed(1) + '" y="' + (ly - 2).toFixed(1) + '" text-anchor="end" style="fill:' + col + '">qps</text>');
+                s.push('<text class="endlab" x="' + (X(lp.x) - 2).toFixed(1) + '" y="' + (ly - 2).toFixed(1) + '" text-anchor="end" style="fill:' + col + '">tps</text>');
               }
             }
           });
@@ -4019,6 +4054,7 @@ function measure() {
   dash.style.setProperty("--dash-arm-h", armH.toFixed(1) + "px");
   if (graph && sentinel) {
     graph.style.height = "";
+    graph.style.marginBottom = "";
     graph.classList.remove("stuck");
     fullH = graph.getBoundingClientRect().height;
     pinStart = sentinel.getBoundingClientRect().top + window.scrollY - armH;
@@ -4032,9 +4068,11 @@ function apply() {
   const h = fullH - t * range;
   if (t <= 0) {
     graph.style.height = "";
+    graph.style.marginBottom = "";
     graph.classList.remove("stuck");
   } else {
     graph.style.height = h.toFixed(1) + "px";
+    graph.style.marginBottom = (fullH - h).toFixed(1) + "px";
     graph.classList.add("stuck");
   }
   dash.style.setProperty("--dash-graph-cur", h.toFixed(1) + "px");
@@ -4993,7 +5031,8 @@ table.tbl{border-collapse:collapse;width:100%;font-size:12.5px;
 .tbl td.dcell{white-space:nowrap}
 .tbl .pval{font-size:15px}
 .tbl .dval{font-size:15px;font-weight:700}
-/* The muted parenthetical (absolute delta + p) that trails the Δ% in the download tables. */
+/* The muted parenthetical trailing a value in the download tables: the absolute delta + p in a
+   Δ cell, the min/TB/node cost in a progress cell. nowrap so it wraps whole in narrow columns. */
 .tbl .dsub{font-size:10.5px;color:var(--muted);margin-left:4px;white-space:nowrap}
 .tbl .pv{font-size:10.5px;margin-left:4px}
 .tbl .psig{color:var(--ink);font-weight:700}

@@ -73,9 +73,11 @@ function render_body(ctx){
     }
   }
 
+  // The ops are workload TRANSACTIONS (newOrder, payment, …), each several queries — so the
+  // headings say Transaction, and the throughput toggle says tps.
   function op_heading(op){
     if (op === "agg") return "Overall Workload Latency";
-    return op[0].toUpperCase()+op.slice(1)+" Query Latency";
+    return op[0].toUpperCase()+op.slice(1)+" Transaction Latency";
   }
   // A plain (non-sticky) rule separating the Restore info section above from the Latency section.
   A.push("<hr class='sec-sep'>");
@@ -86,7 +88,9 @@ function render_body(ctx){
   A.push("<button data-pct='p50' class='on'>p50</button>");
   A.push("<button data-pct='p95'>p95</button>");
   A.push("<button data-pct='p99' class='on'>p99</button>");
-  A.push("<button data-qps>qps</button></span>");
+  // "tps", not "qps": the payload's `qps` series counts completed workload OPERATIONS, and one
+  // op is several queries. The data-* hook and the payload field keep the old name.
+  A.push("<button data-qps>tps</button></span>");
   A.push("<span class='seg'>");   // linear/log
   A.push("<button data-scale='linear' class='on'>linear</button>");
   A.push("<button data-scale='log'>log</button></span>");

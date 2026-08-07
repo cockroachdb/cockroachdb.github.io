@@ -261,13 +261,48 @@ function analyze(arms){
     });
     return {arms:per.map(function(e){ return {v:e.s.mean, std:e.s.std, n:e.vals.length}; }), cmp:cmp};
   }
+  // One run's elapsed -> min/TB/node scale, off its reported size (metadata.total_bytes) and its
+  // node count: minutes of wall clock per TB per node. Restores run for hours over terabytes, so
+  // that lands on numbers people quote ("~3 hours per TB per node") rather than the small
+  // fractions a per-GB-per-second cost gives. null when a run reports a size without a node
+  // count or vice versa — can't normalize.
+  function _cost_k(inf){
+    return (inf && inf.total_mb && inf.nodes) ? (inf.nodes * 1048576 / (60 * inf.total_mb)) : null;
+  }
+  // A progress row from per-arm [{t, k}] lists: the elapsed stats as displayed (`arms`, and the
+  // seconds `cmp` the frozen oracle checks), plus `cost` — the SAME per-run elapsed normalized
+  // to min/TB/node, with its own summaries and MWU.
+  //
+  // The arm-to-arm comparison is taken from `cost` whenever it exists, because raw seconds
+  // aren't comparable across arms that restore different amounts of data onto different node
+  // counts: "20s slower" says nothing if B moved twice the bytes. Normalizing first makes the
+  // Δ/Δ%/p answer "slower per TB per node", which is the question. Scaling is per RUN and comes
+  // before the stats, so the MWU ranks the normalized values rather than raw seconds. `cost` is
+  // null when any contributing run can't be normalized, and the table falls back to seconds.
+  function _progress_row(perArm){
+    var st = _dlStatsN(perArm.map(function(vals){ return vals.map(function(x){ return x.t; }); }));
+    var known = perArm.every(function(vals){ return vals.every(function(x){ return x.k != null; }); });
+    var any = perArm.some(function(vals){ return vals.length > 0; });
+    var cost = (known && any)
+      ? _dlStatsN(perArm.map(function(vals){ return vals.map(function(x){ return x.t * x.k; }); }))
+      : null;
+    return {arms:st.arms, cmp:st.cmp, cost:cost};
+  }
   // Elapsed-to-download-% per arm. Each row: per-arm elapsed + each non-baseline arm's Δ vs A.
   // A solo arm renders a single column; rows with no data at a % are dropped.
+  function _stall_vals(runs, info, pct){
+    var out = [];
+    runs.forEach(function(run, i){ var s = crossing_sample(run, pct);
+      if (s !== null) out.push({t:s.el, k:_cost_k(info[i])}); });
+    return out;
+  }
   var time_to_stall = [];
   stall_pcts.forEach(function(pct){
-    var st = _dlStatsN(arm_run_lists.map(function(runs){ return _stall_elapsed(runs, pct); }));
-    if (st.arms.length===1 && st.arms[0].v===null) return;
-    time_to_stall.push({pct:pct, arms:st.arms, cmp:st.cmp});
+    var r = _progress_row(arm_run_lists.map(function(runs, ai){
+      return _stall_vals(runs, arm_info_lists[ai], pct);
+    }));
+    if (r.arms.length===1 && r.arms[0].v===null) return;
+    time_to_stall.push({pct:pct, arms:r.arms, cmp:r.cmp, cost:r.cost});
   });
 
   // ---- Restore milestones (optional `timings`) ----
@@ -276,16 +311,16 @@ function analyze(arms){
   // so these slot straight into the progress table alongside them. `restored` gets no row of
   // its own: the 100% download crossing already is it. It is used below as the denominator of
   // the overall throughput. A milestone no run reported is dropped entirely.
-  function _milestone_elapsed(info, key){
+  function _milestone_vals(info, key){
     var out = [];
-    info.forEach(function(x){ var v = x.timings[key]; if (v != null) out.push(v); });
+    info.forEach(function(x){ var v = x.timings[key]; if (v != null) out.push({t:v, k:_cost_k(x)}); });
     return out;
   }
   var milestones = [];
   USABILITY_MILESTONES.forEach(function(key){
-    var st = _dlStatsN(arm_info_lists.map(function(info){ return _milestone_elapsed(info, key); }));
-    if (!st.arms.some(function(a){ return a.v !== null; })) return;
-    milestones.push({key:key, label:key, arms:st.arms, cmp:st.cmp});
+    var r = _progress_row(arm_info_lists.map(function(info){ return _milestone_vals(info, key); }));
+    if (!r.arms.some(function(a){ return a.v !== null; })) return;
+    milestones.push({key:key, label:key, arms:r.arms, cmp:r.cmp, cost:r.cost});
   });
 
   // ---- Download throughput (MB/s): per-run avg & peak, with A/B stats ----
@@ -315,12 +350,16 @@ function analyze(arms){
     if (f.nodes) return f.nodes; } return null; })();
 
   // ---- Effective throughput: total size / elapsed / node ----
-  // The honest whole-operation rate. The avg/peak disk rows below average only the intervals
-  // in which the disk was actually writing — but nothing is written for the first stretch of
-  // the restore, so those overstate what the operation as a whole achieved. `overall` divides
-  // the dataset by the full wall clock to completion; the `to <milestone>` rows divide the
-  // same dataset by the time to reach each usability milestone, i.e. how fast the restore
-  // delivered a usable database rather than how fast it moved bytes.
+  // The honest whole-operation rate, and the only row here that isn't a raw disk figure.
+  // `restored` divides the dataset by the full wall clock to completion — a real transfer rate,
+  // since by then every byte has moved, and directly comparable to the disk rows below it. Those
+  // average only the intervals in which the disk was actually writing, but nothing is written
+  // for the first stretch of the restore, so they run ahead of what the operation achieved.
+  //
+  // The usability milestones get NO rows here. Reaching them isn't moving the dataset (most of
+  // it hasn't moved yet), so quoting one as MB/s/node reads as a wild transfer rate for no
+  // reason. They live in the progress table instead, as elapsed + the min/TB/node cost that
+  // _cost_k derives — which is this row's unit rearranged, so the two tables still meet.
   //
   // Needs both metadata.total_bytes and a node count; without either, the row is dropped
   // rather than silently mixing a cluster total into a per-node column.
@@ -350,17 +389,12 @@ function analyze(arms){
     if (!st.arms.some(function(a){ return a.v !== null; })) return null;
     return {key:key, label:label, arms:st.arms, cmp:st.cmp};
   }
-  // Row order: the whole-operation rates first (overall on top, then each milestone in the
-  // order it occurs), then the raw disk rates that only describe the writing intervals.
+  // Row order: the whole-operation rate first, then the raw disk rates.
   var mbps_rows = [];
-  var overall = _eff_row("overall", "overall", _restored_at);
+  var overall = _eff_row("overall", "restored", _restored_at);
   if (overall) mbps_rows.push(overall);
-  USABILITY_MILESTONES.forEach(function(key){
-    var row = _eff_row("to_"+key, "to "+key, function(run, inf){ return inf.timings[key]; });
-    if (row) mbps_rows.push(row);
-  });
   // Per-arm avg/peak disk MB/s + each non-baseline arm's Δ vs A. Solo -> single column.
-  [["avg", "avg disk", _vmean], ["peak", "peak disk", _vmax]].forEach(function(pr){
+  [["avg", "disk avg rate", _vmean], ["peak", "disk peak rate", _vmax]].forEach(function(pr){
     var st = _dlStatsN(arm_run_lists.map(function(runs){ return _mbps_per_run(runs, pr[2]); }));
     if (st.arms.length===1 && st.arms[0].v===null) return;
     mbps_rows.push({key:pr[0], label:pr[1], arms:st.arms, cmp:st.cmp});
