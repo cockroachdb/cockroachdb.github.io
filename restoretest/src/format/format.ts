@@ -107,6 +107,16 @@ function fmtSettings(settings){
   return ks.map(function(k){ return _shortSetting(k, settings[k]); }).join(" ");
 }
 
+// Compact data size from an MB (2^20 bytes) magnitude — "512 MB" / "300 GB" / "1.2 TB". Same
+// 1024 ladder as the progress-distribution table's _mbUnit, so every size in the report reads
+// in the same unit family. null for a missing/non-positive value.
+function fmtSizeMB(mb){
+  if (mb === null || mb === undefined || isnan(mb) || mb <= 0) return null;
+  var units = ["MB","GB","TB","PB"], i = 0, v = mb;
+  while (v >= 1024 && i < units.length-1){ v /= 1024; i++; }
+  return _num(v) + " " + units[i];
+}
+
 // Compact elapsed label (s / m / h), used by time_rows and the time tables.
 function _tlabel(t){
   if (t < 60) return Math.round(t)+"s";
@@ -116,4 +126,4 @@ function _tlabel(t){
   return h+"h"+(mm?mm+"m":"");
 }
 
-export { _fmt, esc, _commas, _num, _sms, _pct, _g2, _e0, _pfmt, _nice_step, _tlabel, fmtDur, fmtAgo, fmtSettings };
+export { _fmt, esc, _commas, _num, _sms, _pct, _g2, _e0, _pfmt, _nice_step, _tlabel, fmtDur, fmtAgo, fmtSettings, fmtSizeMB };

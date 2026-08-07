@@ -3,7 +3,7 @@ import { OPS, POINT_OPS, SCAN_OPS, MIXED_OPS, LAT_METRICS, STALLS, STALL_PCT, PR
 import { mann_whitney, bh_fdr, _summ } from "./stats";
 import { build_cells, compute_cell_stats, qps_median, is_primary } from "./cells";
 import { build_series, crossing_sample } from "./series";
-import { parse_run } from "./ingest";
+import { parse_run, run_info, USABILITY_MILESTONES } from "./ingest";
 import { _g2, _tlabel } from "../format/format";
 import { clean, NAN, isnan } from "../util";
 
@@ -30,13 +30,16 @@ function time_rows(refComplete){
 function analyze(arms){
   var dual = arms.length > 1;
 
+  // Returns the arm's parsed sample series AND the matching run-level scalars (timings /
+  // total size / node count), index-aligned: both lists skip the same unusable runs, so
+  // info[i] always describes runs[i].
   function loadArm(arm){
-    var runs = [];
+    var runs = [], info = [];
     (arm.runs || []).forEach(function(raw){
       var s = parse_run(raw);
-      if (s.length) runs.push(s);
+      if (s.length){ runs.push(s); info.push(run_info(raw)); }
     });
-    return runs;
+    return {runs:runs, info:info};
   }
   // A run with no usable samples is almost always a pre-v:2 body (old {download:[...],
   // samples:{...}} instead of {elapsed, download:{...}, ops:{...}}) — point at the spec.
@@ -46,16 +49,18 @@ function analyze(arms){
     return "arm "+which+" has no runs with usable samples"
       + (stale ? " — run body looks pre-v:2 (missing `elapsed`/`ops`); expected the v:2 body from summary_report_spec.md" : "");
   }
-  var ctl_runs = loadArm(arms[0]);
+  var ctl_load = loadArm(arms[0]), ctl_runs = ctl_load.runs;
   if (!ctl_runs.length) throw new Error(noSamples("A", arms[0]));
-  var exp_runs = [];
+  var exp_load:any = {runs:[], info:[]}, exp_runs = [];
   if (dual){
-    exp_runs = loadArm(arms[1]);
+    exp_load = loadArm(arms[1]);
+    exp_runs = exp_load.runs;
     if (!exp_runs.length) throw new Error(noSamples("B", arms[1]));
   }
   // Third arm (C): loaded for the plots (series) and timing markers only. The comparison
   // math (cells/stats) still runs over ctl vs exp — arm C joins the tables in a later step.
-  var c_runs = arms.length > 2 ? loadArm(arms[2]) : [];
+  var c_load:any = arms.length > 2 ? loadArm(arms[2]) : {runs:[], info:[]};
+  var c_runs = c_load.runs;
   var hasC = c_runs.length > 0;
 
   var prov_ctl = arms[0], prov_exp = dual ? arms[1] : {settings:{}};
@@ -170,6 +175,20 @@ function analyze(arms){
     var m = /^(\d{2})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/.exec(ts || "");
     return m ? ("20"+m[1]+"/"+m[2]+"/"+m[3]+" "+m[4]+":"+m[5]+":"+m[6]) : null;
   }
+  // Cluster/dataset facts for one arm, read straight off its runs: the node count is how many
+  // per-node download columns a run carries, the size is metadata.total_bytes. Both are
+  // config, identical across an arm's runs, so the first run that has them wins. The test NAME
+  // is opaque — nothing is derived from it. Works on the raw arm (not the loaded samples) so
+  // it also covers arms past C, which analyze() renders in the details table without loading.
+  function _arm_facts(arm){
+    var nodes = null, mb = null;
+    (arm && arm.runs || []).forEach(function(raw){
+      var inf = run_info(raw);
+      if (nodes == null) nodes = inf.nodes;
+      if (mb == null) mb = inf.total_mb;
+    });
+    return {nodes:nodes, total_mb:mb};
+  }
   function _arm_detail(arm, label, hue){
     // Show each arm's own (non-harness) settings, like sha/version — NOT a diff against the
     // other arm. A setting shared by both arms still appears under both, so it isn't hidden
@@ -183,10 +202,12 @@ function analyze(arms){
     // no single run's time represents the arm. Null (shown "—") when there's no stamp (e.g.
     // the --teamcity bare run_N layout).
     var ran = _fmtTs(arm.ts) || null;
+    var facts = _arm_facts(arm);
     return {label:label, name:(arm.name||"—"), n:(arm.runs?arm.runs.length:0), hue:hue,
       time:ran, build_time:(arm.buildTime||null),
       test:(arm.test||arm.name||null), version:(arm.version||null),
       commit:(arm.commit||null), branch:(arm.branch||null),
+      nodes:facts.nodes, total_mb:facts.total_mb,
       settings:filtered};
   }
   // Hue per arm by its slot `role` (0=ctl/orange, 1=exp/blue, 2=C/magenta), tagged by the
@@ -221,10 +242,11 @@ function analyze(arms){
   if (hasC) timing.c = _agg_timing(c_runs);   // arm C completion markers on the plots
 
   // Per-arm run lists in slot order (ctl, then exp/c when present) — the download tables and
-  // their baseline-relative deltas iterate these.
-  var arm_run_lists = [ctl_runs];
-  if (dual) arm_run_lists.push(exp_runs);
-  if (hasC) arm_run_lists.push(c_runs);
+  // their baseline-relative deltas iterate these. arm_info_lists is the index-aligned
+  // run-level scalars (timings / size / nodes) for the same runs.
+  var arm_run_lists = [ctl_runs], arm_info_lists = [ctl_load.info];
+  if (dual){ arm_run_lists.push(exp_runs); arm_info_lists.push(exp_load.info); }
+  if (hasC){ arm_run_lists.push(c_runs); arm_info_lists.push(c_load.info); }
   // Baseline-relative pairwise stats over a set of per-arm value lists (arm 0 = baseline):
   // per-arm summaries + {d,dpct,p} of each later arm vs the baseline (the same run-level MWU as
   // the cells). Shared by the elapsed-to-% and MB/s download tables. Shape: {arms:[{v,std,n}], cmp}.
@@ -248,6 +270,24 @@ function analyze(arms){
     time_to_stall.push({pct:pct, arms:st.arms, cmp:st.cmp});
   });
 
+  // ---- Restore milestones (optional `timings`) ----
+  // Elapsed at which the restored data first became available / functional / healthy, per
+  // run, with the same per-arm summary + baseline-relative MWU as the download-% crossings —
+  // so these slot straight into the progress table alongside them. `restored` gets no row of
+  // its own: the 100% download crossing already is it. It is used below as the denominator of
+  // the overall throughput. A milestone no run reported is dropped entirely.
+  function _milestone_elapsed(info, key){
+    var out = [];
+    info.forEach(function(x){ var v = x.timings[key]; if (v != null) out.push(v); });
+    return out;
+  }
+  var milestones = [];
+  USABILITY_MILESTONES.forEach(function(key){
+    var st = _dlStatsN(arm_info_lists.map(function(info){ return _milestone_elapsed(info, key); }));
+    if (!st.arms.some(function(a){ return a.v !== null; })) return;
+    milestones.push({key:key, label:key, arms:st.arms, cmp:st.cmp});
+  });
+
   // ---- Download throughput (MB/s): per-run avg & peak, with A/B stats ----
   // One value per run (avg or peak of its MB/s readings), so the A/B comparison is the
   // same run-level MWU used for elapsed-to-stall — n = number of runs, not samples.
@@ -267,17 +307,64 @@ function analyze(arms){
   }
   var _vmean = function(xs){ var s=0; for (var i=0;i<xs.length;i++) s+=xs[i]; return xs.length?s/xs.length:null; };
   var _vmax = function(xs){ return xs.length ? Math.max.apply(null, xs) : null; };
-  // Per-arm avg/peak MB/s + each non-baseline arm's Δ vs A. Solo -> single column.
+
+  // Node count = how many per-node download columns the runs carry, so the tables and the
+  // download chart's MB/s axis report per-node rates. The test NAME is opaque and is never
+  // parsed. null -> unknown -> cluster total.
+  var nodes = (function(){ for (var i=0;i<arms.length;i++){ var f = _arm_facts(arms[i]);
+    if (f.nodes) return f.nodes; } return null; })();
+
+  // ---- Effective throughput: total size / elapsed / node ----
+  // The honest whole-operation rate. The avg/peak disk rows below average only the intervals
+  // in which the disk was actually writing — but nothing is written for the first stretch of
+  // the restore, so those overstate what the operation as a whole achieved. `overall` divides
+  // the dataset by the full wall clock to completion; the `to <milestone>` rows divide the
+  // same dataset by the time to reach each usability milestone, i.e. how fast the restore
+  // delivered a usable database rather than how fast it moved bytes.
+  //
+  // Needs both metadata.total_bytes and a node count; without either, the row is dropped
+  // rather than silently mixing a cluster total into a per-node column.
+  function _eff_rate_per_run(runs, info, tOf){
+    var out = [];
+    for (var i=0;i<runs.length;i++){
+      var inf = info[i] || {timings:{}};
+      var nd = inf.nodes || nodes;
+      var t = tOf(runs[i], inf);
+      if (inf.total_mb == null || !nd || t == null || !(t > 0)) continue;
+      out.push(inf.total_mb / t / nd);
+    }
+    return out;
+  }
+  // Time to completion for the overall rate: the reported `restored` milestone, else the
+  // run's own download-100% crossing (the same instant, from the series the report already has).
+  function _restored_at(run, inf){
+    var t = inf.timings.restored;
+    if (t != null) return t;
+    var s = crossing_sample(run, 100);
+    return s ? s.el : null;
+  }
+  function _eff_row(key, label, tOf){
+    var st = _dlStatsN(arm_run_lists.map(function(runs, i){
+      return _eff_rate_per_run(runs, arm_info_lists[i], tOf);
+    }));
+    if (!st.arms.some(function(a){ return a.v !== null; })) return null;
+    return {key:key, label:label, arms:st.arms, cmp:st.cmp};
+  }
+  // Row order: the whole-operation rates first (overall on top, then each milestone in the
+  // order it occurs), then the raw disk rates that only describe the writing intervals.
   var mbps_rows = [];
-  [["avg MB/s", _vmean], ["peak MB/s", _vmax]].forEach(function(pr){
-    var st = _dlStatsN(arm_run_lists.map(function(runs){ return _mbps_per_run(runs, pr[1]); }));
-    if (st.arms.length===1 && st.arms[0].v===null) return;
-    mbps_rows.push({label:pr[0], arms:st.arms, cmp:st.cmp});
+  var overall = _eff_row("overall", "overall", _restored_at);
+  if (overall) mbps_rows.push(overall);
+  USABILITY_MILESTONES.forEach(function(key){
+    var row = _eff_row("to_"+key, "to "+key, function(run, inf){ return inf.timings[key]; });
+    if (row) mbps_rows.push(row);
   });
-  // Nodes (from the test name, e.g. ".../nodes=5/...") so the table reports per-node
-  // MB/s, matching the download chart's MB/s axis. null -> unknown -> cluster total.
-  var nodes = (function(){ for (var i=0;i<arms.length;i++){ var t = arms[i] && arms[i].test;
-    var m = t && /nodes=(\d+)/.exec(t); if (m) return +m[1]; } return null; })();
+  // Per-arm avg/peak disk MB/s + each non-baseline arm's Δ vs A. Solo -> single column.
+  [["avg", "avg disk", _vmean], ["peak", "peak disk", _vmax]].forEach(function(pr){
+    var st = _dlStatsN(arm_run_lists.map(function(runs){ return _mbps_per_run(runs, pr[2]); }));
+    if (st.arms.length===1 && st.arms[0].v===null) return;
+    mbps_rows.push({key:pr[0], label:pr[1], arms:st.arms, cmp:st.cmp});
+  });
 
   // ---- Plot series (dense) ----
   var all_runs = ctl_runs.concat(exp_runs).concat(c_runs);
@@ -318,7 +405,8 @@ function analyze(arms){
     n_ctl:ctl_runs.length, n_exp:exp_runs.length,
     neg_control:neg_control, qps_status:qps_status, confounds:confounds,
     primary_conclusion:conclusion, primary_keys:primary_keys,
-    timing:timing, time_to_stall:time_to_stall, mbps_rows:mbps_rows, nodes:nodes,
+    timing:timing, time_to_stall:time_to_stall, milestones:milestones,
+    mbps_rows:mbps_rows, nodes:nodes,
     series:series, xmax_el:xmax_el,
     refComplete:refComplete, timeRows:timeRows,
     op_order:op_order, chartData:chartData, labels:labels, armKeys:armKeys,
@@ -336,7 +424,7 @@ function data_json(ctx){
     negative_control:ctx.neg_control, qps_status:ctx.qps_status, confounds:ctx.confounds,
     thresholds:{neg_control_margin_pct:NEG_CONTROL_MARGIN_PCT, equiv_margin_pct:EQUIV_MARGIN_PCT,
       min_reliable_samples:MIN_RELIABLE_SAMPLES, alpha:ALPHA, fdr_q:FDR_Q},
-    timing:{}, time_to_stall:[], cells:[], series:ctx.series,
+    timing:{}, time_to_stall:[], milestones:[], cells:[], series:ctx.series,
   };
   ["ctl","exp"].forEach(function(arm){
     var t = ctx.timing[arm], o = {};
@@ -347,6 +435,13 @@ function data_json(ctx){
     // JSON keeps the baseline (A) + first comparand (B) shape; a third arm rides only the UI.
     var a = r.arms[0], b = r.arms[1], c = r.cmp[0];
     out.time_to_stall.push({stall_pct:r.pct, a_elapsed_s:a?a.v:null, a_std_s:a?a.std:null,
+      b_elapsed_s:b?b.v:null, b_std_s:b?b.std:null,
+      delta_s:c?c.d:null, delta_pct:c?c.dpct:null, exact_p:clean(c?c.p:NAN)});
+  });
+  // Usability milestones (optional `timings`), same A/B shape as time_to_stall above.
+  (ctx.milestones||[]).forEach(function(r){
+    var a = r.arms[0], b = r.arms[1], c = r.cmp[0];
+    out.milestones.push({milestone:r.key, a_elapsed_s:a?a.v:null, a_std_s:a?a.std:null,
       b_elapsed_s:b?b.v:null, b_std_s:b?b.std:null,
       delta_s:c?c.d:null, delta_pct:c?c.dpct:null, exact_p:clean(c?c.p:NAN)});
   });

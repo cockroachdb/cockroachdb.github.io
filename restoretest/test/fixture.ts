@@ -83,8 +83,27 @@ function toOldBody(d: RunData, columnar: boolean) {
   return { v: 2, download: cols(download), node_remote_mb: cols(node_remote_mb), samples: sc };
 }
 
+// The optional format additions: metadata.total_bytes + the body-level `timings` milestones.
+// Only the flat-run builders (dualRuns/soloRuns) emit these — the golden catalogs stay on the
+// pre-addition body so the frozen oracle remains directly comparable.
+// Sized to match the synthetic download: ~50 MB/s/node x 5 nodes x 90s ~= 22 GB. Keeping it
+// consistent means the rendered table has the real-world ordering, where `overall` (which
+// includes the ramp before the disk starts writing) sits just below `avg disk`.
+export const TOTAL_BYTES = 20 * 1024 * 1024 * 1024; // 20 GiB
+function runTimings(seed: number) {
+  const r = rng(seed ^ 0x5eed);
+  // Download reaches 100% at el=90 in makeRunData, so `restored` matches the pct crossing;
+  // the usability milestones land before it, jittered per run so the stats have spread.
+  return {
+    available: +(10 + 6 * r()).toFixed(1),
+    functional: +(28 + 8 * r()).toFixed(1),
+    healthy: +(55 + 12 * r()).toFixed(1),
+    restored: 90,
+  };
+}
+
 // NEW v:2 body: one `elapsed` axis, named column arrays under download/ops.
-function toNewBody(d: RunData, meta?: unknown) {
+function toNewBody(d: RunData, meta?: unknown, timings?: unknown) {
   const nodes = d.remote.length ? d.remote[0].length : 0;
   const node_remote_mb: number[][] = [];
   for (let n = 0; n < nodes; n++) node_remote_mb.push(d.remote.map((row) => row[n]));
@@ -108,6 +127,7 @@ function toNewBody(d: RunData, meta?: unknown) {
     ops,
   };
   if (meta) body.metadata = meta;
+  if (timings) body.timings = timings;
   return body;
 }
 
@@ -156,6 +176,7 @@ function runMeta(c: ArmCfg) {
     settings: c.settings,
     commit: c.commit,
     branch: c.branch,
+    total_bytes: TOTAL_BYTES,
   };
 }
 function seeds(c: ArmCfg) {
@@ -173,7 +194,7 @@ function newArm(c: ArmCfg) {
 }
 function armRuns(c: ArmCfg) {
   const m = runMeta(c);
-  return seeds(c).map((s) => toNewBody(makeRunData(s, c.latScale, c.nodes), m));
+  return seeds(c).map((s) => toNewBody(makeRunData(s, c.latScale, c.nodes), m, runTimings(s)));
 }
 
 const A: ArmCfg = {

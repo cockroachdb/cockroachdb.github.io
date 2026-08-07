@@ -110,4 +110,43 @@ function _dl_at(dl, el){
   return dl[n-1];
 }
 
-export { qps_weighted_agg, parse_run, _dl_at };
+// --------------------------------------------------------------------------
+// Run-level scalars (everything that isn't a time series)
+// --------------------------------------------------------------------------
+
+// The restore milestones `timings` reports, in the order they occur. `restored` is the
+// completion marker; the three before it are usability thresholds — see RunTimings.
+var MILESTONES = ["available", "functional", "healthy", "restored"];
+// The three that get their own progress/throughput rows. `restored` is deliberately not one:
+// the 100% download crossing is already that row. It rides along as the denominator of the
+// overall throughput instead.
+var USABILITY_MILESTONES = ["available", "functional", "healthy"];
+
+// The optional run-level facts that ride alongside the sample series: the `timings`
+// milestones, metadata.total_bytes (as MB, matching every other MB in the report), and the
+// node count — which is simply how many per-node download columns the run carries. The test
+// NAME is opaque; nothing is ever parsed out of it. Every field is optional: absent -> null,
+// and the rows that need it are dropped rather than guessed at.
+function run_info(run){
+  var md = (run && run.metadata) || {};
+  // Spec puts `timings` at the body level; also accept it under metadata, since it is a
+  // per-run scalar block and that is the other place a generator would plausibly put it.
+  var raw = (run && run.timings) || md.timings || {};
+  var timings = {};
+  MILESTONES.forEach(function(k){
+    var v = _n(raw[k]);
+    if (v != null && isFinite(v) && v >= 0) timings[k] = v;
+  });
+  var tb = _n(md.total_bytes);
+  if (tb == null) tb = _n(run && run.total_bytes);
+  var cols = run && run.download && run.download.node_remote_mb;
+  return {
+    timings: timings,
+    // MB here is 2^20 bytes — the same unit as download.mbps and node_remote_mb, so the
+    // throughput table's rows are all in one unit.
+    total_mb: (tb != null && isFinite(tb) && tb > 0) ? tb/1048576 : null,
+    nodes: (Array.isArray(cols) && cols.length) ? cols.length : null,
+  };
+}
+
+export { qps_weighted_agg, parse_run, _dl_at, run_info, MILESTONES, USABILITY_MILESTONES };

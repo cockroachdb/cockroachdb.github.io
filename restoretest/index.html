@@ -443,6 +443,27 @@ function _dl_at(dl, el) {
   }
   return dl[n - 1];
 }
+var MILESTONES = ["available", "functional", "healthy", "restored"];
+var USABILITY_MILESTONES = ["available", "functional", "healthy"];
+function run_info(run) {
+  var md = run && run.metadata || {};
+  var raw = run && run.timings || md.timings || {};
+  var timings = {};
+  MILESTONES.forEach(function(k) {
+    var v = _n(raw[k]);
+    if (v != null && isFinite(v) && v >= 0) timings[k] = v;
+  });
+  var tb = _n(md.total_bytes);
+  if (tb == null) tb = _n(run && run.total_bytes);
+  var cols = run && run.download && run.download.node_remote_mb;
+  return {
+    timings,
+    // MB here is 2^20 bytes — the same unit as download.mbps and node_remote_mb, so the
+    // throughput table's rows are all in one unit.
+    total_mb: tb != null && isFinite(tb) && tb > 0 ? tb / 1048576 : null,
+    nodes: Array.isArray(cols) && cols.length ? cols.length : null
+  };
+}
 function _interp(pts, xq) {
   if (!pts.length || xq < pts[0][0] || xq > pts[pts.length - 1][0]) return null;
   var lo = 0, hi = pts.length - 1;
@@ -877,6 +898,15 @@ function fmtSettings(settings) {
     return _shortSetting(k, settings[k]);
   }).join(" ");
 }
+function fmtSizeMB(mb) {
+  if (mb === null || mb === void 0 || isnan(mb) || mb <= 0) return null;
+  var units = ["MB", "GB", "TB", "PB"], i = 0, v = mb;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return _num(v) + " " + units[i];
+}
 function _tlabel(t) {
   if (t < 60) return Math.round(t) + "s";
   var m = Math.round(t / 60);
@@ -898,26 +928,31 @@ function time_rows(refComplete) {
 function analyze(arms) {
   var dual = arms.length > 1;
   function loadArm(arm) {
-    var runs = [];
+    var runs = [], info = [];
     (arm.runs || []).forEach(function(raw) {
       var s = parse_run(raw);
-      if (s.length) runs.push(s);
+      if (s.length) {
+        runs.push(s);
+        info.push(run_info(raw));
+      }
     });
-    return runs;
+    return { runs, info };
   }
   function noSamples(which, arm) {
     var r0 = (arm && arm.runs || [])[0];
     var stale = r0 && !r0.elapsed && (Array.isArray(r0.download) || r0.samples);
     return "arm " + which + " has no runs with usable samples" + (stale ? " — run body looks pre-v:2 (missing `elapsed`/`ops`); expected the v:2 body from summary_report_spec.md" : "");
   }
-  var ctl_runs = loadArm(arms[0]);
+  var ctl_load = loadArm(arms[0]), ctl_runs = ctl_load.runs;
   if (!ctl_runs.length) throw new Error(noSamples("A", arms[0]));
-  var exp_runs = [];
+  var exp_load = { runs: [], info: [] }, exp_runs = [];
   if (dual) {
-    exp_runs = loadArm(arms[1]);
+    exp_load = loadArm(arms[1]);
+    exp_runs = exp_load.runs;
     if (!exp_runs.length) throw new Error(noSamples("B", arms[1]));
   }
-  var c_runs = arms.length > 2 ? loadArm(arms[2]) : [];
+  var c_load = arms.length > 2 ? loadArm(arms[2]) : { runs: [], info: [] };
+  var c_runs = c_load.runs;
   var hasC = c_runs.length > 0;
   var prov_ctl = arms[0], prov_exp = dual ? arms[1] : { settings: {} };
   var cl = arms[0].label || "A";
@@ -1049,6 +1084,15 @@ function analyze(arms) {
     var m = /^(\d{2})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/.exec(ts || "");
     return m ? "20" + m[1] + "/" + m[2] + "/" + m[3] + " " + m[4] + ":" + m[5] + ":" + m[6] : null;
   }
+  function _arm_facts(arm) {
+    var nodes2 = null, mb = null;
+    (arm && arm.runs || []).forEach(function(raw) {
+      var inf = run_info(raw);
+      if (nodes2 == null) nodes2 = inf.nodes;
+      if (mb == null) mb = inf.total_mb;
+    });
+    return { nodes: nodes2, total_mb: mb };
+  }
   function _arm_detail(arm, label, hue) {
     var mine = arm.settings || {};
     var filtered = {};
@@ -1056,6 +1100,7 @@ function analyze(arms) {
       if (!HARNESS_SETTINGS[k]) filtered[k] = mine[k];
     }
     var ran = _fmtTs(arm.ts) || null;
+    var facts = _arm_facts(arm);
     return {
       label,
       name: arm.name || "—",
@@ -1067,6 +1112,8 @@ function analyze(arms) {
       version: arm.version || null,
       commit: arm.commit || null,
       branch: arm.branch || null,
+      nodes: facts.nodes,
+      total_mb: facts.total_mb,
       settings: filtered
     };
   }
@@ -1099,9 +1146,15 @@ function analyze(arms) {
   }
   var timing = { ctl: _agg_timing(ctl_runs), exp: _agg_timing(exp_runs) };
   if (hasC) timing.c = _agg_timing(c_runs);
-  var arm_run_lists = [ctl_runs];
-  if (dual) arm_run_lists.push(exp_runs);
-  if (hasC) arm_run_lists.push(c_runs);
+  var arm_run_lists = [ctl_runs], arm_info_lists = [ctl_load.info];
+  if (dual) {
+    arm_run_lists.push(exp_runs);
+    arm_info_lists.push(exp_load.info);
+  }
+  if (hasC) {
+    arm_run_lists.push(c_runs);
+    arm_info_lists.push(c_load.info);
+  }
   function _dlStatsN(perArmVals) {
     var per = perArmVals.map(function(v) {
       return { vals: v, s: _summ(v) };
@@ -1124,6 +1177,24 @@ function analyze(arms) {
     }));
     if (st.arms.length === 1 && st.arms[0].v === null) return;
     time_to_stall.push({ pct, arms: st.arms, cmp: st.cmp });
+  });
+  function _milestone_elapsed(info, key) {
+    var out = [];
+    info.forEach(function(x) {
+      var v = x.timings[key];
+      if (v != null) out.push(v);
+    });
+    return out;
+  }
+  var milestones = [];
+  USABILITY_MILESTONES.forEach(function(key) {
+    var st = _dlStatsN(arm_info_lists.map(function(info) {
+      return _milestone_elapsed(info, key);
+    }));
+    if (!st.arms.some(function(a) {
+      return a.v !== null;
+    })) return;
+    milestones.push({ key, label: key, arms: st.arms, cmp: st.cmp });
   });
   function _run_mbps(run) {
     var pts = [];
@@ -1153,22 +1224,55 @@ function analyze(arms) {
   var _vmax = function(xs) {
     return xs.length ? Math.max.apply(null, xs) : null;
   };
-  var mbps_rows = [];
-  [["avg MB/s", _vmean], ["peak MB/s", _vmax]].forEach(function(pr) {
-    var st = _dlStatsN(arm_run_lists.map(function(runs) {
-      return _mbps_per_run(runs, pr[1]);
-    }));
-    if (st.arms.length === 1 && st.arms[0].v === null) return;
-    mbps_rows.push({ label: pr[0], arms: st.arms, cmp: st.cmp });
-  });
   var nodes = (function() {
     for (var i = 0; i < arms.length; i++) {
-      var t = arms[i] && arms[i].test;
-      var m = t && /nodes=(\d+)/.exec(t);
-      if (m) return +m[1];
+      var f = _arm_facts(arms[i]);
+      if (f.nodes) return f.nodes;
     }
     return null;
   })();
+  function _eff_rate_per_run(runs, info, tOf) {
+    var out = [];
+    for (var i = 0; i < runs.length; i++) {
+      var inf = info[i] || { timings: {} };
+      var nd = inf.nodes || nodes;
+      var t = tOf(runs[i], inf);
+      if (inf.total_mb == null || !nd || t == null || !(t > 0)) continue;
+      out.push(inf.total_mb / t / nd);
+    }
+    return out;
+  }
+  function _restored_at(run, inf) {
+    var t = inf.timings.restored;
+    if (t != null) return t;
+    var s = crossing_sample(run, 100);
+    return s ? s.el : null;
+  }
+  function _eff_row(key, label, tOf) {
+    var st = _dlStatsN(arm_run_lists.map(function(runs, i) {
+      return _eff_rate_per_run(runs, arm_info_lists[i], tOf);
+    }));
+    if (!st.arms.some(function(a) {
+      return a.v !== null;
+    })) return null;
+    return { key, label, arms: st.arms, cmp: st.cmp };
+  }
+  var mbps_rows = [];
+  var overall = _eff_row("overall", "overall", _restored_at);
+  if (overall) mbps_rows.push(overall);
+  USABILITY_MILESTONES.forEach(function(key) {
+    var row = _eff_row("to_" + key, "to " + key, function(run, inf) {
+      return inf.timings[key];
+    });
+    if (row) mbps_rows.push(row);
+  });
+  [["avg", "avg disk", _vmean], ["peak", "peak disk", _vmax]].forEach(function(pr) {
+    var st = _dlStatsN(arm_run_lists.map(function(runs) {
+      return _mbps_per_run(runs, pr[2]);
+    }));
+    if (st.arms.length === 1 && st.arms[0].v === null) return;
+    mbps_rows.push({ key: pr[0], label: pr[1], arms: st.arms, cmp: st.cmp });
+  });
   var all_runs = ctl_runs.concat(exp_runs).concat(c_runs);
   var max_el = 0, _elset = {};
   all_runs.forEach(function(run) {
@@ -1227,6 +1331,7 @@ function analyze(arms) {
     primary_keys,
     timing,
     time_to_stall,
+    milestones,
     mbps_rows,
     nodes,
     series,
@@ -1521,6 +1626,24 @@ function prov_table(ctx) {
   out.push(row("test", function(d) {
     return "<code>" + esc(d.test || "—") + "</code>";
   }));
+  if (details.some(function(pair) {
+    return pair[1].nodes != null;
+  }))
+    out.push(row(
+      "nodes",
+      function(d) {
+        return d.nodes != null ? esc(d.nodes) : "—";
+      },
+      function(d) {
+        return d.nodes != null ? String(d.nodes) : "";
+      }
+    ));
+  if (details.some(function(pair) {
+    return pair[1].total_mb != null;
+  }))
+    out.push(row("data size", function(d) {
+      return esc(fmtSizeMB(d.total_mb) || "—");
+    }));
   out.push(row("commit", commit_cell, function(d) {
     return d.version || "";
   }));
@@ -1577,7 +1700,7 @@ function _dlRow(o) {
     cells += "<td>" + o.fmtVal(A.v, A.std, A.n) + "</td>";
     if (i > 0) cells += _dlDelta(o.cmp[i - 1], o.goodPos, o.deltaVal, o.deltaUnit);
   }
-  return '<tr><td class="l stage">' + o.label + "</td>" + cells + "</tr>";
+  return '<tr><td class="l stage' + (o.cls || "") + '">' + o.label + "</td>" + cells + "</tr>";
 }
 function _dlPick(row, armKeys, shown) {
   if (shown.length === armKeys.length) return { arms: row.arms, cmp: row.cmp };
@@ -1585,7 +1708,20 @@ function _dlPick(row, armKeys, shown) {
   return { arms: [row.arms[j]], cmp: [] };
 }
 function time_to_stall_table(ctx, armMode) {
-  if (!ctx.time_to_stall.length) return "";
+  var rows = (ctx.time_to_stall || []).map(function(r) {
+    return { label: r.pct + "%", cls: "", row: r };
+  }).concat((ctx.milestones || []).map(function(r) {
+    return { label: esc(r.label), cls: " mstone", row: r };
+  }));
+  if (!rows.length) return "";
+  rows.forEach(function(e, i) {
+    var a0 = e.row.arms[0];
+    e.k = a0 && a0.v != null ? a0.v : Infinity;
+    e.i = i;
+  });
+  rows.sort(function(a, b) {
+    return a.k - b.k || a.i - b.i;
+  });
   var S = _dlShown(ctx, armMode);
   var secCell = function(v, sd, n) {
     if (v === null || v === void 0) return "–";
@@ -1593,10 +1729,11 @@ function time_to_stall_table(ctx, armMode) {
     return '<span class="pval">' + v.toFixed(0) + '</span><span class="unit">s</span>' + s;
   };
   var out = [_dlHead("Progress", S.shown, ctx.labels, " elapsed")];
-  ctx.time_to_stall.forEach(function(r) {
-    var pk = _dlPick(r, S.armKeys, S.shown);
+  rows.forEach(function(e) {
+    var pk = _dlPick(e.row, S.armKeys, S.shown);
     out.push(_dlRow({
-      label: r.pct + "%",
+      label: e.label,
+      cls: e.cls,
       arms: pk.arms,
       cmp: pk.cmp,
       goodPos: false,
@@ -1614,10 +1751,7 @@ function mbps_table(ctx, armMode) {
   if (!ctx.mbps_rows || !ctx.mbps_rows.length) return "";
   var S = _dlShown(ctx, armMode);
   var nd = ctx.nodes && ctx.nodes > 0 ? ctx.nodes : null;
-  var unitSpan = '<span class="unit">MB/s</span>';
-  var rowLabel = function(lbl) {
-    return esc(lbl) + (nd && nd > 1 ? "/node" : "");
-  };
+  var unitSpan = '<span class="unit">MB/s' + (nd && nd > 1 ? "/node" : "") + "</span>";
   var valCell = function(v, sd, n) {
     if (v === null || v === void 0) return "–";
     var s = n > 1 ? '<span class="sd">±' + _num(sd || 0) + "</span>" : "";
@@ -1627,7 +1761,7 @@ function mbps_table(ctx, armMode) {
   ctx.mbps_rows.forEach(function(r) {
     var pk = _dlPick(r, S.armKeys, S.shown);
     out.push(_dlRow({
-      label: rowLabel(r.label),
+      label: esc(r.label),
       arms: pk.arms,
       cmp: pk.cmp,
       goodPos: true,
@@ -4841,6 +4975,9 @@ table.tbl{border-collapse:collapse;width:100%;font-size:12.5px;
 .tbl td.l,.tbl th.l{text-align:left}
 .tbl td.l{font-weight:600}
 .tbl td.stage{font-weight:640;color:var(--ink)}
+/* Usability milestones (available/functional/healthy) interleaved among the download-%
+   crossings in the progress table — same timeline, different kind of row. */
+.tbl td.stage.mstone{font-weight:560;font-style:italic;color:var(--ink2)}
 .tbl .elap{color:var(--ink2);font-weight:500;font-size:11.5px;white-space:nowrap}
 .tbl th.grp{text-align:center;text-transform:none;font-size:12px;font-weight:700;
  color:var(--ink);border-left:2px solid var(--page)}

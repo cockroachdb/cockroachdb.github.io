@@ -24,6 +24,22 @@ export interface RunMetadata {
   arm?: string;
   commit?: string;
   branch?: string;
+  /** OPTIONAL total size of the restored data, in bytes — the numerator of the
+   *  effective-throughput rows (bytes / elapsed / node). */
+  total_bytes?: number;
+}
+
+/** OPTIONAL restore milestones, in elapsed seconds. Any subset may be present.
+ *  - `available`  — data readable at all (possibly far too slow to be usable for real work).
+ *  - `functional` — accessible with degraded perf: p50 <= 5x the restored p99.
+ *  - `healthy`    — p50 <= the restored p99, i.e. the average request sees nothing worse
+ *                   than a usual steady-state request.
+ *  - `restored`   — restore completion. */
+export interface RunTimings {
+  available?: number;
+  functional?: number;
+  healthy?: number;
+  restored?: number;
 }
 
 /** A summary_report.json body (v:2 columnar). One shared `elapsed` axis; every value array
@@ -32,6 +48,8 @@ export interface RawRun {
   v?: number;
   metadata?: RunMetadata;
   elapsed?: number[];
+  /** OPTIONAL milestone elapsed times; absent ⇒ those rows are simply not rendered. */
+  timings?: RunTimings;
   download?: {
     pct?: (number | null)[];
     mbps?: (number | null)[];
@@ -156,7 +174,12 @@ export interface Ctx {
   primary_keys: string[];
   timing: Record<string, unknown>;
   time_to_stall: unknown[];
+  /** optional restore milestones (from RunTimings), same row shape as time_to_stall; the
+   *  progress table interleaves the two on one timeline. Empty when no run reported any. */
+  milestones: unknown[];
   mbps_rows: unknown[];
+  /** node count = per-node download columns per run; null when unknown. Never parsed out of
+   *  the test name, which is opaque. */
   nodes: number | null;
   series: Record<string, unknown>; // op -> build_series() result
   xmax_el: number;

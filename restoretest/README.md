@@ -74,6 +74,9 @@ Three sources, in priority order (see `resolveAndRender`):
   layout/controls/labels are being actively redesigned, so compute fidelity is the durable
   invariant this gate guards; render output is covered behaviorally by the SMOKE suite below.
 - **`test/self_test.test.ts`** ports the original `self_test()` unit assertions.
+- **`test/timings.test.ts`** covers the optional format additions — the `timings` milestones
+  and `metadata.total_bytes` — including that they degrade cleanly when absent and that the
+  node count is read from `download.node_remote_mb`, never from the (opaque) test name.
 - **`test/smoke.test.ts`** (`npm run smoke`) loads the built single-file report in real
   Chrome and asserts it boots, renders, and reacts to controls with no page errors — the
   end-to-end check the golden test can't cover (ESM strict-mode, module load-order, DOM).

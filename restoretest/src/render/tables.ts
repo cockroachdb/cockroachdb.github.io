@@ -1,5 +1,5 @@
 // HTML table generators (cells, op tables, time tables, provenance, throughput).
-import { esc, _num, _pct, _sms } from "../format/format";
+import { esc, _num, _pct, _sms, fmtSizeMB } from "../format/format";
 import { isnan, NAN, pyRound } from "../util";
 import { ALPHA, MAIN_METRICS } from "../model/constants";
 import { mann_whitney, _summ } from "../compute/stats";
@@ -207,6 +207,15 @@ function prov_table(ctx){
   out.push(row("runs", function(d){return esc(d.n);}, function(d){return String(d.n);}, false));
   out.push(row("ran", function(d){return esc(d.time || "—");}));
   out.push(row("test", function(d){return '<code>'+esc(d.test || "—")+'</code>';}));
+  // Cluster/dataset shape. Both come off the run bodies (node count = how many per-node
+  // download columns; size = metadata.total_bytes) — never parsed out of the opaque test
+  // name — and each is shown only when some arm reports it. Separate rows so a shared node
+  // count still merges when the dataset sizes differ, and vice versa.
+  if (details.some(function(pair){ return pair[1].nodes != null; }))
+    out.push(row("nodes", function(d){return d.nodes != null ? esc(d.nodes) : "—";},
+      function(d){return d.nodes != null ? String(d.nodes) : "";}));
+  if (details.some(function(pair){ return pair[1].total_mb != null; }))
+    out.push(row("data size", function(d){return esc(fmtSizeMB(d.total_mb) || "—");}));
   out.push(row("commit", commit_cell, function(d){return d.version || "";}));
   // Build time on its own row (below commit) so the "ran" row can merge across arms when
   // run times match even if the binaries were built at different times.
@@ -254,14 +263,15 @@ function _dlDelta(d, goodPos, deltaVal, deltaUnit){
   var sub = '(' + absStr + (pTxt ? (', <span class="'+pcls+'">'+pTxt+'</span>') : '') + ')';
   return '<td'+dc+'><span class="dval" style="color:var('+vr+')">'+_pct(d.dpct)+'</span><span class="dsub">'+sub+'</span></td>';
 }
-// o: {label, arms:[{v,std,n}], cmp:[{d,dpct,p}], goodPos, fmtVal(v,sd,n)->cell, deltaVal(d)->str, deltaUnit}
+// o: {label, arms:[{v,std,n}], cmp:[{d,dpct,p}], goodPos, fmtVal(v,sd,n)->cell, deltaVal(d)->str,
+//     deltaUnit, cls?} — cls is an extra class on the label cell (e.g. " mstone").
 function _dlRow(o){
   var cells = "";
   for (var i=0;i<o.arms.length;i++){ var A = o.arms[i];
     cells += '<td>'+o.fmtVal(A.v, A.std, A.n)+'</td>';
     if (i>0) cells += _dlDelta(o.cmp[i-1], o.goodPos, o.deltaVal, o.deltaUnit);
   }
-  return '<tr><td class="l stage">'+o.label+'</td>'+cells+'</tr>';
+  return '<tr><td class="l stage'+(o.cls||"")+'">'+o.label+'</td>'+cells+'</tr>';
 }
 // Filter an analyze row ({arms,cmp} over ALL arms) down to the shown arms: all -> as-is; a
 // single isolated arm -> just its value, no deltas.
@@ -270,36 +280,58 @@ function _dlPick(row, armKeys, shown){
   var j = armKeys.indexOf(shown[0]);
   return {arms:[row.arms[j]], cmp:[]};
 }
-// Elapsed to reach each download %, per arm + each non-baseline arm's Δ vs A. Less time is
-// better (negative Δ green).
+// Elapsed to reach each point of the restore, per arm + each non-baseline arm's Δ vs A. Less
+// time is better (negative Δ green). Two kinds of row share the table: the download-%
+// crossings, and the optional usability milestones from the run's `timings` block
+// (available / functional / healthy). They are one timeline, so they interleave in
+// chronological order of the BASELINE arm's mean rather than being stacked in two blocks — a
+// milestone is only meaningful next to how far the download had got. Milestone labels carry
+// an extra class so they still read as a different kind of row. `restored` gets no row: the
+// 100% crossing already is it.
 function time_to_stall_table(ctx, armMode?){
-  if (!ctx.time_to_stall.length) return "";
+  var rows = (ctx.time_to_stall || []).map(function(r){ return {label:r.pct+'%', cls:"", row:r}; })
+    .concat((ctx.milestones || []).map(function(r){ return {label:esc(r.label), cls:" mstone", row:r}; }));
+  if (!rows.length) return "";
+  // Rows with no baseline reading sort last, keeping their declared order among themselves.
+  rows.forEach(function(e, i){
+    var a0 = e.row.arms[0];
+    e.k = (a0 && a0.v != null) ? a0.v : Infinity;
+    e.i = i;
+  });
+  rows.sort(function(a, b){ return (a.k - b.k) || (a.i - b.i); });
   var S = _dlShown(ctx, armMode);
   var secCell = function(v, sd, n){ if (v === null || v === undefined) return "–";
     var s = (n > 1) ? '<span class="sd">±'+(sd||0).toFixed(0)+'</span>' : "";
     return '<span class="pval">'+v.toFixed(0)+'</span><span class="unit">s</span>'+s; };
   var out = [_dlHead("Progress", S.shown, ctx.labels, " elapsed")];
-  ctx.time_to_stall.forEach(function(r){ var pk = _dlPick(r, S.armKeys, S.shown);
-    out.push(_dlRow({label:r.pct+'%', arms:pk.arms, cmp:pk.cmp, goodPos:false,
+  rows.forEach(function(e){ var pk = _dlPick(e.row, S.armKeys, S.shown);
+    out.push(_dlRow({label:e.label, cls:e.cls, arms:pk.arms, cmp:pk.cmp, goodPos:false,
       fmtVal:secCell, deltaVal:function(d){return _sms(d);}, deltaUnit:'<span class="unit">s</span>'}));
   });
   out.push('</tbody></table>');
   return out.join("");
 }
-// Download throughput (MB/s): avg + peak rows. More MB/s is better (positive Δ green). Values
-// are already per-node (same source as the download chart's MB/s axis); nd only picks wording.
+// Download throughput (MB/s). More MB/s is better (positive Δ green). Every value is
+// per-node: the disk rows come from the generator already divided by nodes (same source as
+// the download chart's MB/s axis), and the whole-operation rows divide by the node count in
+// analyze(). So the unit — not the row label — carries the "/node", and every row in the
+// column is directly comparable.
+//
+// Rows, in analyze() order: `overall` (dataset / wall clock to restored / node — the honest
+// headline), then `to <milestone>` (dataset / time to that usability milestone / node), then
+// the raw `avg disk` / `peak disk` write rates, which only cover the intervals in which the
+// disk was writing and so run ahead of the overall figure.
 function mbps_table(ctx, armMode?){
   if (!ctx.mbps_rows || !ctx.mbps_rows.length) return "";
   var S = _dlShown(ctx, armMode);
   var nd = (ctx.nodes && ctx.nodes > 0) ? ctx.nodes : null;
-  var unitSpan = '<span class="unit">MB/s</span>';
-  var rowLabel = function(lbl){ return esc(lbl) + ((nd && nd > 1) ? '/node' : ''); };
+  var unitSpan = '<span class="unit">MB/s'+((nd && nd > 1) ? '/node' : '')+'</span>';
   var valCell = function(v, sd, n){ if (v === null || v === undefined) return "–";
     var s = (n > 1) ? '<span class="sd">±'+_num(sd||0)+'</span>' : "";
     return '<span class="pval">'+_num(v)+'</span>'+unitSpan+s; };
   var out = [_dlHead("throughput", S.shown, ctx.labels, "")];
   ctx.mbps_rows.forEach(function(r){ var pk = _dlPick(r, S.armKeys, S.shown);
-    out.push(_dlRow({label:rowLabel(r.label), arms:pk.arms, cmp:pk.cmp, goodPos:true,
+    out.push(_dlRow({label:esc(r.label), arms:pk.arms, cmp:pk.cmp, goodPos:true,
       fmtVal:valCell, deltaVal:function(d){return _sms(d);}, deltaUnit:unitSpan}));
   });
   out.push('</tbody></table>');

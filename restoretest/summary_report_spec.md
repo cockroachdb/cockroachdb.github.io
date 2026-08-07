@@ -25,11 +25,20 @@ There is one body format (`v: 2`); there is no row-format or legacy path from th
     "arm":       "a",                  // OPTIONAL — only when ONE invocation emits an A/B pair
                                        //   sharing timestamp; "a"/"b"
     "commit":    "cloud: record network bytes…",  // OPTIONAL provenance (commit subject)
-    "branch":    "master"              // OPTIONAL provenance
+    "branch":    "master",             // OPTIONAL provenance
+    "total_bytes": 322122547200        // OPTIONAL total size of the restored data, in BYTES
+                                       //   (see §1.1)
   },
 
   "elapsed": [0, 30, 60, 90, …],       // seconds, ascending, unique — THE time axis.
                                        //   Every value array below is exactly this length.
+
+  "timings": {                         // OPTIONAL restore milestones, elapsed seconds (§1.1)
+    "available":  30,                  //   data readable at all
+    "functional": 90,                  //   readable, degraded: p50 <= 5x the restored p99
+    "healthy":    420,                 //   p50 <= the restored p99
+    "restored":   600                  //   restore complete
+  },
 
   "download": {                        // run-global, download domain
     "pct":  [ … ],                     //   download %  (0.1% resolution)
@@ -59,6 +68,51 @@ There is one body format (`v: 2`); there is no row-format or legacy path from th
   per-op latencies.
 - **`download` has exactly three keys: `pct`, `mbps`, `node_remote_mb`.** Do not emit `l0_mb`,
   `read_amp`, or other extra series — the report ignores them and they only bloat the slug.
+- **The node count is `node_remote_mb.length`.** Emit one column per node and the report has
+  it. Nothing is ever parsed out of `test` — see §1.2.
+
+### 1.1 `timings` + `total_bytes` (both OPTIONAL)
+
+Two independent additions. Omit either and the rows that need it are simply not rendered;
+everything else is unaffected.
+
+**`timings`** — elapsed seconds at which the restored data crossed each usability threshold.
+Any subset of the four keys may be present; unknown keys are ignored.
+
+| key | meaning |
+| --- | --- |
+| `available` | data is readable *at all* — possibly far too slow to be usable for real work |
+| `functional` | readable with degraded perf: p50 <= **5x** the normal/restored p99 |
+| `healthy` | p50 <= the restored p99 — the average request sees nothing worse than a usual one |
+| `restored` | restore completion |
+
+The report renders `available` / `functional` / `healthy` as extra rows in the **progress**
+table, interleaved with the download-% crossings in chronological order (one timeline).
+`restored` gets no row of its own — the 100% download crossing already is it — but it *is*
+the denominator of the overall throughput below. If `restored` is omitted, the report falls
+back to each run's own 100% crossing.
+
+**`metadata.total_bytes`** — the total size of the restored data, in bytes. With it (and the
+node count) the report adds whole-operation rows to the **throughput** table, all in
+MB/s/node, where MB is 2^20 bytes to match `download.mbps` and `node_remote_mb`:
+
+| row | value |
+| --- | --- |
+| `overall` | `total_bytes / time-to-restored / nodes` |
+| `to available` / `to functional` / `to healthy` | `total_bytes / time-to-<milestone> / nodes` |
+
+`overall` is the headline: unlike `avg disk`, which averages only the intervals in which the
+disk was writing, it includes the ramp before the first byte lands and so is the rate the
+operation actually achieved. The `to <milestone>` rows say how fast the restore delivered a
+*usable* database rather than how fast it moved bytes, so they run well ahead of `overall`.
+
+`total_bytes` is config, not a measurement — repeat the same value on every run of a set.
+
+### 1.2 The `test` name is opaque
+
+The report treats `test` as an identity + display string and **parses nothing out of it**.
+Node count comes from `download.node_remote_mb.length`, dataset size from
+`metadata.total_bytes`. Do not encode facts in the name expecting the report to read them.
 
 ---
 
@@ -89,7 +143,7 @@ Shown in the provenance table, merged across sets when equal and split when they
 - `commit` / `branch` can't be derived from a sha — include them for a branch + subject
   provenance row; omit and provenance degrades to the build id only. **Truncate `commit` to
   ≤40 chars** (the report shows at most 40; longer just bloats the slug).
-- Put `nodes=<N>` in `test` for per-node MB/s axis labels (absent ⇒ cluster-total).
+- Nothing is parsed out of `test` — see §1.2. Per-node MB/s comes from `node_remote_mb`.
 
 **Repeat the full `metadata` on every run** — it gzips to nothing, makes each run
 self-describing, and keeps runs mergeable when links are combined. **Emit control-config
