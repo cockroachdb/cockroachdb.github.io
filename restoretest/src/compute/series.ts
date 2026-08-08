@@ -127,6 +127,10 @@ function build_series(op, ctl_runs, exp_runs, dual, el_grid, pct_grid, c_runs?){
   var RLEVELS = ["min","mean","max","ratio","delta"];
   var RVARIANTS = ["", "Pc", "Runs", "PcRuns"];
   var rcap = function(lv){ return "r"+lv.charAt(0).toUpperCase()+lv.slice(1); };
+  // Initial skew: one scalar per run (not a curve), the across-node spread as a % of the mean at
+  // the run's baseline sample — peak total remote MB, i.e. once the restore has linked its files
+  // in (see parse_run). Read by the progress-distribution table.
+  var rInitSkewRuns = {};
   var R: any = {};
   RVARIANTS.forEach(function(v){ RLEVELS.forEach(function(lv){ R[rcap(lv)+v] = {}; }); });
   var toPts = function(xy){ return xy.map(function(p){return {x:p[0], y:p[1]};}); };
@@ -207,6 +211,11 @@ function build_series(op, ctl_runs, exp_runs, dual, el_grid, pct_grid, c_runs?){
       R[base+"Runs"][arm]   = runs.map(function(r){ return toPts(_xy(r, op, metric, "el")); });
       R[base+"PcRuns"][arm] = pruns.map(function(r){ return toPts(_xy(r, op, metric, "pct")); });
     });
+    rInitSkewRuns[arm] = runs.map(function(r){
+      for (var i=0;i<r.length;i++){ var s = r[i];
+        if (s.rbase) return (s.rmean > 0) ? s.rdelta/s.rmean*100.0 : null; }
+      return null;
+    });
     var ce = crossings_elapsed(runs);
     var crArm = {}; for (var kk in ce) crArm[String(kk)] = ce[kk];
     cr[arm] = crArm;
@@ -216,7 +225,8 @@ function build_series(op, ctl_runs, exp_runs, dual, el_grid, pct_grid, c_runs?){
   return Object.assign({big: op === "agg", el: el, pc: pc, dl: dl, cr: cr,
           elRuns: elRuns, pcRuns: pcRuns, dlRuns: dlRuns, ep: ep, epRuns: epRuns,
           qpEl: qpEl, qpPc: qpPc, qpElRuns: qpElRuns, qpPcRuns: qpPcRuns,
-          mb: mb, mbPc: mbPc, mbRuns: mbRuns, mbPcRuns: mbPcRuns}, R);
+          mb: mb, mbPc: mbPc, mbRuns: mbRuns, mbPcRuns: mbPcRuns,
+          rInitSkewRuns: rInitSkewRuns}, R);
 }
 
 export { crossing_sample, _xy, resample, download_curve, crossings_elapsed, build_series };

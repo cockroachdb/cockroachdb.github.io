@@ -365,7 +365,7 @@ function _mbUnit(vals){   // pick MB/GB/TB for a set of byte magnitudes
   if (mx >= 1024) return { unit: "GB", div: 1024 };
   return { unit: "MB", div: 1 };
 }
-// Progress-distribution summary: initial skew + each run's PEAK max−min remaining-bytes spread,
+// Progress-distribution summary: initial skew + each run's peak max−min remaining-bytes spread,
 // averaged per arm with each non-baseline arm's Δ vs A — computed here from the skew series
 // (ctx.series), so analyze() is untouched. Below the max-delta row, a link reveals the full chart.
 function pdist_table(ctx, armMode?){
@@ -379,18 +379,12 @@ function pdist_table(ctx, armMode?){
       if (mx != null) out.push(mx); });
     return out;
   };
-  // Initial skew: at the FIRST sample, the across-node spread (max−min = rdelta) as a % of the
-  // across-node mean (rmean), per run, averaged per arm. Captures how unevenly the download starts.
+  // Initial skew: the across-node spread (max−min) as a % of the across-node mean at each run's
+  // BASELINE sample — peak total remote MB, i.e. once the restore has linked its files in, not
+  // the first sample, which catches link-in mid-flight (see parse_run). Averaged per arm; it
+  // captures how unevenly the download starts.
   var initSkew = function(arm){
-    var dr = (s0.rDeltaRuns && s0.rDeltaRuns[arm]) || [], mr = (s0.rMeanRuns && s0.rMeanRuns[arm]) || [], o = [];
-    for (var i=0;i<dr.length;i++){
-      var dd = dr[i], mm = mr[i];
-      if (!dd || !dd.length || !mm || !mm.length) continue;
-      var delta = dd[0].y, mean = mm[0].y;
-      if (delta == null || mean == null || !mean) continue;
-      o.push(delta / mean * 100.0);
-    }
-    return o;
+    return ((s0.rInitSkewRuns && s0.rInitSkewRuns[arm]) || []).filter(function(v){ return v != null; });
   };
   if (!S.armKeys.some(function(a){ return peaks(a).length; })) return "";
   // Baseline-relative stats over the shown arms for a per-arm value fn.

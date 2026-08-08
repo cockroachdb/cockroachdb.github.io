@@ -103,6 +103,7 @@ export interface Sample {
   rmax?: number;
   rdelta?: number;
   rratio?: number;
+  rbase?: boolean; // the run's peak-total-remote-MB sample (the rratio / initial-skew baseline)
 }
 
 /** A run is its sorted sample series. */

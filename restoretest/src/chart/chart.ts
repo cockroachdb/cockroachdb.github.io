@@ -771,7 +771,8 @@ export function runChart(RC){
    s.push('<text class="axtitle" transform="rotate(-90 '+lx+' '+((yt+yb)/2)+')" x="'+lx+'" y="'+((yt+yb)/2)+'" text-anchor="middle">remote '+unit+' by node</text>');
    ARMS.forEach(function(a){ if(armOn(a)) drawArm(a); });
 
-   // --- y2: node skew = max−min spread ÷ the run's INITIAL across-node mean (ratio, dimensionless,
+   // --- y2: node skew = max−min spread ÷ the run's BASELINE across-node mean, taken at peak
+   // total remote bytes — after link-in, before download bites (ratio, dimensionless,
    // decays to 0 at completion) OR max−min spread (delta, bytes) —
    // mutually exclusive; delta auto-scales its own MB/GB/TB unit independently of y1. ---
    var fmtMB=function(v){return v>=1048576?(v/1048576).toFixed(1)+' TB':v>=1024?(v/1024).toFixed(1)+' GB':Math.round(v)+' MB';};
@@ -789,7 +790,7 @@ export function runChart(RC){
        y2fmt=(y2mode==='Delta')?function(v){return 'Δ '+fmtMB(v);}:function(v){return (Math.round(v*100)/100)+'×';};
        for(var rv=0;rv<=rtop+1e-9;rv+=rstep)
          s.push('<text class="y2tick" x="'+(x1+4)+'" y="'+(Yr(rv)+2).toFixed(1)+'" text-anchor="start">'+(y2mode==='Delta'?axn(rv/rdiv):(axn(rv)+'×'))+'</text>');
-       s.push('<text class="axtitle" transform="rotate(-90 '+(x1+30)+' '+((yt+yb)/2)+')" x="'+(x1+30)+'" y="'+((yt+yb)/2)+'" text-anchor="middle">'+(y2mode==='Delta'?('max−min '+runit+' by node'):'skew ÷ initial mean')+'</text>');
+       s.push('<text class="axtitle" transform="rotate(-90 '+(x1+30)+' '+((yt+yb)/2)+')" x="'+(x1+30)+'" y="'+((yt+yb)/2)+'" text-anchor="middle">'+(y2mode==='Delta'?('max−min '+runit+' by node'):'skew ÷ peak mean')+'</text>');
        var rline=function(pl,color,key){ if(!pl)return; var cc=clipPts(pl,xmin,xmax); if(cc.length<2)return;
          var d=cc.map(function(p,i){return (i?'L':'M')+X(p.x).toFixed(1)+' '+Yr(pv(p)).toFixed(1);}).join(' ');
          s.push('<path class="mbln'+(key!=null?' rln':'')+'"'+(key!=null?' data-run="'+key+'"':'')+' style="stroke:'+color+'" d="'+d+'"/>');

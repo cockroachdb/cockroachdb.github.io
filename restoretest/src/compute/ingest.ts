@@ -37,7 +37,7 @@ function qps_weighted_agg(lat, qps){
 // steady-state 100% tail), so % is defined at every tick even when download rode a coarser
 // clock; when it shares the sample clock (the common case) the fill is exact. Per-node remote
 // MB remaining is reduced across nodes to min/mean/max, the absolute spread (max-min), and the
-// skew ratio = (max-min) / the run's INITIAL across-node mean — a fixed per-run baseline, so the
+// skew ratio = (max-min) / the run's BASELINE across-node mean — a fixed per-run baseline, so the
 // ratio stays byte-independent yet decays to 0 as the download completes (instead of blowing up as
 // the instantaneous mean approaches 0),
 // INCLUDING nodes already at 0. The report emits only the real ops; the "agg" op (Overall
@@ -53,7 +53,13 @@ function parse_run(run){
   var nodeCols = Array.isArray(dl.node_remote_mb) ? dl.node_remote_mb : [];
 
   var samples = [];
-  var initMean = null;   // the run's across-node mean at the first tick with node data (rratio baseline)
+  // The run's BASELINE sample: the tick with the greatest across-node TOTAL remote MB. The
+  // restore links files in as it goes, so remote bytes RISE through link-in before the download
+  // drives them back down — the first tick holds whatever was linked in by then (often near 0,
+  // sometimes exactly 0, which would pin every ratio below to 0) and says nothing about the run.
+  // The peak total is the moment the whole working set is known, so that is what the skew ratio
+  // divides by, and what build_series measures each run's initial skew at.
+  var baseSample: any = null, baseSum = null;
   for (var i=0;i<el.length;i++){
     var s: any = {el:+el[i], pct:null, lat:{}, qps:{}, ctx:{}};
     for (var op in ops){
@@ -64,20 +70,28 @@ function parse_run(run){
       if (p95 != null) s.lat[LK(op,"p95")] = +p95;
       if (p99 != null) s.lat[LK(op,"p99")] = +p99;
     }
-    // Reduce per-node remaining MB (nodes at 0 included) to min/mean/max/delta/ratio.
+    // Reduce per-node remaining MB (nodes at 0 included) to min/mean/max/delta.
     if (nodeCols.length){
       var vals = [];
       for (var nc=0;nc<nodeCols.length;nc++){ var v: any = _at(nodeCols[nc],i); if (v != null) vals.push(+v); }
       if (vals.length){
         var mn=vals[0], mx=vals[0], sum=0;
         for (var j=0;j<vals.length;j++){ var vv=vals[j]; if(vv<mn)mn=vv; if(vv>mx)mx=vv; sum+=vv; }
-        var mean=sum/vals.length;
-        if (initMean == null) initMean = mean;   // fixed baseline = first tick's across-node mean
-        s.rmin=mn; s.rmean=mean; s.rmax=mx; s.rdelta=(mx-mn);
-        s.rratio=(initMean>0 ? (mx-mn)/initMean : 0);   // spread relative to the run's INITIAL mean
+        s.rmin=mn; s.rmean=sum/vals.length; s.rmax=mx; s.rdelta=(mx-mn);
+        if (baseSum == null || sum > baseSum){ baseSum = sum; baseSample = s; }
       }
     }
     samples.push(s);
+  }
+  // rratio can only be scaled once the whole run has been seen, so it's a second pass: each
+  // tick's spread relative to the baseline mean, flagging the baseline sample itself for the
+  // consumers that report the skew there.
+  if (baseSample){
+    baseSample.rbase = true;
+    var baseMean = baseSample.rmean;
+    samples.forEach(function(s: any){
+      if (s.rdelta != null) s.rratio = (baseMean > 0 ? s.rdelta/baseMean : 0);
+    });
   }
 
   // Download %/MB-s as their own {el,pct,mbps} series (non-null ticks), then filled onto

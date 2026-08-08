@@ -15,8 +15,10 @@ const OPS = ["agg", "stockLevel", "orderStatus", "delivery", "newOrder", "paymen
 
 // Keys the frozen OLD oracle can't track (display/serialization or intentionally-redefined):
 //   runs/perRun/prov_details — see note in the ctx test below
-//   rRatio* — node-skew ratio, intentionally redefined to (max−min)/initial-mean (was the OLD
+//   rRatio* — node-skew ratio, intentionally redefined to (max−min)/baseline-mean (was the OLD
 //             oracle's (max−mean)/instantaneous-mean). Present in ctx.series AND data_json.series.
+//   rInitSkewRuns — per-run initial skew at the peak-total-remote-MB sample, a later addition
+//             feeding the progress-distribution table; the frozen oracle has no equivalent.
 //   time_to_stall / mbps_rows — now ALSO populated for a solo arm (single-column tables); the
 //             frozen oracle only computes them for dual. mbps_rows additionally gained the
 //             whole-operation throughput rows and a stable `key` per row. The dual disk-rate
@@ -26,7 +28,7 @@ const OPS = ["agg", "stockLevel", "orderStatus", "delivery", "newOrder", "paymen
 //   armKeys — the ordered list of arms the chart should draw (A/B/C); a display concern the
 //             frozen oracle predates. labels stays {ctl,exp} for 1-2 arms, so it isn't dropped.
 const DROP: any = { runs: 1, perRun: 1, prov_details: 1, rRatio: 1, rRatioPc: 1, rRatioRuns: 1, rRatioPcRuns: 1,
-  time_to_stall: 1, mbps_rows: 1, milestones: 1, armKeys: 1 };
+  rInitSkewRuns: 1, time_to_stall: 1, mbps_rows: 1, milestones: 1, armKeys: 1 };
 const drop = (_k: string, v: any) => (DROP[_k] ? undefined : v);
 
 // The OLD oracle parses the pre-refactor body (row/columnar); the NEW layer parses the v:2

@@ -368,7 +368,7 @@ function parse_run(run) {
   var pctCol = dl.pct, mbpsCol = dl.mbps;
   var nodeCols = Array.isArray(dl.node_remote_mb) ? dl.node_remote_mb : [];
   var samples = [];
-  var initMean = null;
+  var baseSample = null, baseSum = null;
   for (var i = 0; i < el.length; i++) {
     var s = { el: +el[i], pct: null, lat: {}, qps: {}, ctx: {} };
     for (var op in ops) {
@@ -393,16 +393,24 @@ function parse_run(run) {
           if (vv > mx) mx = vv;
           sum += vv;
         }
-        var mean = sum / vals.length;
-        if (initMean == null) initMean = mean;
         s.rmin = mn;
-        s.rmean = mean;
+        s.rmean = sum / vals.length;
         s.rmax = mx;
         s.rdelta = mx - mn;
-        s.rratio = initMean > 0 ? (mx - mn) / initMean : 0;
+        if (baseSum == null || sum > baseSum) {
+          baseSum = sum;
+          baseSample = s;
+        }
       }
     }
     samples.push(s);
+  }
+  if (baseSample) {
+    baseSample.rbase = true;
+    var baseMean = baseSample.rmean;
+    samples.forEach(function(s2) {
+      if (s2.rdelta != null) s2.rratio = baseMean > 0 ? s2.rdelta / baseMean : 0;
+    });
   }
   var dlpts = [];
   for (var di = 0; di < el.length; di++) {
@@ -615,6 +623,7 @@ function build_series(op, ctl_runs, exp_runs, dual, el_grid, pct_grid, c_runs) {
   var rcap = function(lv) {
     return "r" + lv.charAt(0).toUpperCase() + lv.slice(1);
   };
+  var rInitSkewRuns = {};
   var R = {};
   RVARIANTS.forEach(function(v) {
     RLEVELS.forEach(function(lv) {
@@ -724,6 +733,13 @@ function build_series(op, ctl_runs, exp_runs, dual, el_grid, pct_grid, c_runs) {
         return toPts(_xy(r, op, metric, "pct"));
       });
     });
+    rInitSkewRuns[arm] = runs.map(function(r) {
+      for (var i = 0; i < r.length; i++) {
+        var s = r[i];
+        if (s.rbase) return s.rmean > 0 ? s.rdelta / s.rmean * 100 : null;
+      }
+      return null;
+    });
     var ce = crossings_elapsed(runs);
     var crArm = {};
     for (var kk in ce) crArm[String(kk)] = ce[kk];
@@ -747,7 +763,8 @@ function build_series(op, ctl_runs, exp_runs, dual, el_grid, pct_grid, c_runs) {
     mb,
     mbPc,
     mbRuns,
-    mbPcRuns
+    mbPcRuns,
+    rInitSkewRuns
   }, R);
 }
 function _cross_lat(run, op, metric, stall) {
@@ -1836,15 +1853,9 @@ function pdist_table(ctx, armMode) {
     return out2;
   };
   var initSkew = function(arm) {
-    var dr = s0.rDeltaRuns && s0.rDeltaRuns[arm] || [], mr = s0.rMeanRuns && s0.rMeanRuns[arm] || [], o = [];
-    for (var i = 0; i < dr.length; i++) {
-      var dd = dr[i], mm = mr[i];
-      if (!dd || !dd.length || !mm || !mm.length) continue;
-      var delta = dd[0].y, mean = mm[0].y;
-      if (delta == null || mean == null || !mean) continue;
-      o.push(delta / mean * 100);
-    }
-    return o;
+    return (s0.rInitSkewRuns && s0.rInitSkewRuns[arm] || []).filter(function(v) {
+      return v != null;
+    });
   };
   if (!S.armKeys.some(function(a) {
     return peaks(a).length;
@@ -3276,7 +3287,7 @@ function runChart(RC) {
           };
           for (var rv = 0; rv <= rtop + 1e-9; rv += rstep)
             s.push('<text class="y2tick" x="' + (x1 + 4) + '" y="' + (Yr(rv) + 2).toFixed(1) + '" text-anchor="start">' + (y2mode === "Delta" ? axn(rv / rdiv) : axn(rv) + "×") + "</text>");
-          s.push('<text class="axtitle" transform="rotate(-90 ' + (x1 + 30) + " " + (yt + yb) / 2 + ')" x="' + (x1 + 30) + '" y="' + (yt + yb) / 2 + '" text-anchor="middle">' + (y2mode === "Delta" ? "max−min " + runit + " by node" : "skew ÷ initial mean") + "</text>");
+          s.push('<text class="axtitle" transform="rotate(-90 ' + (x1 + 30) + " " + (yt + yb) / 2 + ')" x="' + (x1 + 30) + '" y="' + (yt + yb) / 2 + '" text-anchor="middle">' + (y2mode === "Delta" ? "max−min " + runit + " by node" : "skew ÷ peak mean") + "</text>");
           var rline = function(pl, color, key) {
             if (!pl) return;
             var cc = clipPts(pl, xmin, xmax);
