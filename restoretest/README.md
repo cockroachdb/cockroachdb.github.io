@@ -69,10 +69,10 @@ Three sources, in priority order (see `resolveAndRender`):
 - **`test/golden.test.ts`** runs the pre-refactor CORE (preserved verbatim at
   `test/golden/core.reference.cjs`, extracted from `test/golden/index.reference.html`) and
   the new layered modules on identical inputs and asserts byte-identical `analyze()` ctx and
-  `data_json()`, plus that `bake_svg()` runs for every op without throwing. Render comparison
-  (`render_body`, tables) is intentionally **not** asserted here — the report's
-  layout/controls/labels are being actively redesigned, so compute fidelity is the durable
-  invariant this gate guards; render output is covered behaviorally by the SMOKE suite below.
+  `data_json()`. Render comparison (`render_body`, tables) is intentionally **not** asserted
+  here — the report's layout/controls/labels are being actively redesigned, so compute fidelity
+  is the durable invariant this gate guards; render output is covered behaviorally by the SMOKE
+  suite below.
 - **`test/self_test.test.ts`** ports the original `self_test()` unit assertions.
 - **`test/timings.test.ts`** covers the optional format additions — the `timings` milestones
   and `metadata.total_bytes` — including that they degrade cleanly when absent and that the
