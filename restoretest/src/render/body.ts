@@ -1,6 +1,7 @@
 // Body HTML: assembles the report shell (details + one continuous dashboard: the Restore
 // header/graph and the Latency header/op-charts). The Restore header + progress graph and the
 // Latency header are made sticky by CSS (they pin as you scroll through the op-charts).
+// Either half is omitted when the run set carries no series for it — see hasRestore / hasLat.
 import { esc } from "../format/format";
 import { prov_table, op_time_table, download_tables } from "./tables";
 import { bake_svg } from "./svg";
@@ -17,12 +18,21 @@ function render_body(ctx){
   A.push(prov_table(ctx));
   A.push("</section>");
 
-  // Series-presence flags shared by the sub-containers below.
+  // Series-presence flags shared by the sub-containers below. anyPts: does a series map (keyed
+  // by arm, or by arm_metric) hold any points at all?
+  function anyPts(m){ return !!m && Object.keys(m).some(function(k){ return (m[k]||[]).length; }); }
   var s0 = ctx.series && (ctx.series.agg || ctx.series[op_order[0]]);
-  var hasDl = !!(s0 && s0.dl && Object.keys(s0.dl).some(function(a){ return (s0.dl[a]||[]).length; }));
-  var hasRemote = !!(s0 && s0.rMean && Object.keys(s0.rMean).some(function(a){ return (s0.rMean[a]||[]).length; }));
+  var hasDl = !!(s0 && anyPts(s0.dl));
+  var hasRemote = !!(s0 && anyPts(s0.rMean));
   var dltbl = download_tables(ctx);
   var hasRestore = (hasDl || dltbl || hasRemote);
+  // Latency is per-op, so unlike the run-global dl/rMean above this scans every op. A run with
+  // no foreground workload carries `ops: {}` (spec §1) and no latency series at all; the whole
+  // section goes, rather than blank plots on a fabricated axis over tables of "–".
+  var hasLat = op_order.some(function(op){
+    var s = ctx.series && ctx.series[op];
+    return !!s && (anyPts(s.el) || anyPts(s.qpEl));
+  });
 
   // Global chart controls — they drive EVERY chart (x-axis mode; summary vs per-run; zoom
   // reset). They live in their own right-aligned bar (.stick-gctrl) pinned directly under the
@@ -79,30 +89,32 @@ function render_body(ctx){
     if (op === "agg") return "Overall Workload Latency";
     return op[0].toUpperCase()+op.slice(1)+" Transaction Latency";
   }
-  // A plain (non-sticky) rule separating the Restore info section above from the Latency section.
-  A.push("<hr class='sec-sep'>");
-  // Latency header: title + metric/scale controls (one bar for every op chart below). It's a
-  // transparent overlay that pins at the SAME level as the global-controls bar and slides up to
-  // its LEFT (the split ribbon). With no Restore section it also hosts the global controls.
-  A.push("<div class='ctrl header stick stick-latency'><span class='htitle'>Workload Latency</span><span class='seg'>");
-  A.push("<button data-pct='p50' class='on'>p50</button>");
-  A.push("<button data-pct='p95'>p95</button>");
-  A.push("<button data-pct='p99' class='on'>p99</button>");
-  // "tps", not "qps": the payload's `qps` series counts completed workload OPERATIONS, and one
-  // op is several queries. The data-* hook and the payload field keep the old name.
-  A.push("<button data-qps>tps</button></span>");
-  A.push("<span class='seg'>");   // linear/log
-  A.push("<button data-scale='linear' class='on'>linear</button>");
-  A.push("<button data-scale='log'>log</button></span>");
-  if (!hasRestore) A.push(globalCtrls);   // no Restore section -> host the global controls here
-  A.push("</div>");
-  op_order.forEach(function(op){
-    var big = (op === "agg");
-    A.push("<h3>"+esc(op_heading(op))+"</h3>");
-    A.push("<div class='chart' data-op='"+esc(op)+"' data-big='"+(big?1:0)+"'>"
-      + bake_svg(op, ctx.series[op], big) + "</div>");
-    A.push("<div class='optbl' data-op='"+esc(op)+"'>"+op_time_table(op, ctx.series[op], ctx.armKeys, ctx.labels, ctx.timeRows)+"</div>");
-  });
+  if (hasLat){
+    // A plain (non-sticky) rule separating the Restore info section above from the Latency section.
+    A.push("<hr class='sec-sep'>");
+    // Latency header: title + metric/scale controls (one bar for every op chart below). It's a
+    // transparent overlay that pins at the SAME level as the global-controls bar and slides up to
+    // its LEFT (the split ribbon). With no Restore section it also hosts the global controls.
+    A.push("<div class='ctrl header stick stick-latency'><span class='htitle'>Workload Latency</span><span class='seg'>");
+    A.push("<button data-pct='p50' class='on'>p50</button>");
+    A.push("<button data-pct='p95'>p95</button>");
+    A.push("<button data-pct='p99' class='on'>p99</button>");
+    // "tps", not "qps": the payload's `qps` series counts completed workload OPERATIONS, and one
+    // op is several queries. The data-* hook and the payload field keep the old name.
+    A.push("<button data-qps>tps</button></span>");
+    A.push("<span class='seg'>");   // linear/log
+    A.push("<button data-scale='linear' class='on'>linear</button>");
+    A.push("<button data-scale='log'>log</button></span>");
+    if (!hasRestore) A.push(globalCtrls);   // no Restore section -> host the global controls here
+    A.push("</div>");
+    op_order.forEach(function(op){
+      var big = (op === "agg");
+      A.push("<h3>"+esc(op_heading(op))+"</h3>");
+      A.push("<div class='chart' data-op='"+esc(op)+"' data-big='"+(big?1:0)+"'>"
+        + bake_svg(op, ctx.series[op], big) + "</div>");
+      A.push("<div class='optbl' data-op='"+esc(op)+"'>"+op_time_table(op, ctx.series[op], ctx.armKeys, ctx.labels, ctx.timeRows)+"</div>");
+    });
+  }
 
   A.push("</div>");   // .dash
   A.push("</div>");   // .report

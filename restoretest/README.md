@@ -77,6 +77,9 @@ Three sources, in priority order (see `resolveAndRender`):
 - **`test/timings.test.ts`** covers the optional format additions — the `timings` milestones
   and `metadata.total_bytes` — including that they degrade cleanly when absent and that the
   node count is read from `download.node_remote_mb`, never from the (opaque) test name.
+- **`test/body.test.ts`** covers `render_body`'s section gating — chiefly that a run with
+  no foreground workload (`ops: {}`) drops the whole Workload Latency half and keeps the
+  Restore half intact, and that an ordinary run is unaffected.
 - **`test/smoke.test.ts`** (`npm run smoke`) loads the built single-file report in real
   Chrome and asserts it boots, renders, and reacts to controls with no page errors — the
   end-to-end check the golden test can't cover (ESM strict-mode, module load-order, DOM).
