@@ -49,7 +49,7 @@ There is one body format (`v: 2`); there is no row-format or legacy path from th
     ]
   },
 
-  "ops": {                             // per-op workload latency — REAL ops only
+  "ops": {                             // per-op workload latency — REAL ops only; MAY BE EMPTY
     "<op>": { "qps": […], "p50": […], "p95": […], "p99": […] }   // p50/p95/p99 in whole ms
   }
 }
@@ -74,6 +74,9 @@ There is one body format (`v: 2`); there is no row-format or legacy path from th
   `read_amp`, or other extra series — the report ignores them and they only bloat the slug.
 - **The node count is `node_remote_mb.length`.** Emit one column per node and the report has
   it. Nothing is ever parsed out of `test` — see §1.2.
+- **`ops` may be `{}`** — a run with no foreground workload has no latency to report, and the
+  report then omits the whole workload-latency section rather than drawing empty plots; the
+  restore side is unaffected. `{}` and an op whose every sample is `null` read the same.
 
 ### 1.1 `timings` + `total_bytes` (both OPTIONAL)
 

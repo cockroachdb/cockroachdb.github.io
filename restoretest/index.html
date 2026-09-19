@@ -1943,15 +1943,20 @@ function render_body(ctx) {
   A.push("<section class='details'>");
   A.push(prov_table(ctx));
   A.push("</section>");
+  function anyPts(m) {
+    return !!m && Object.keys(m).some(function(k) {
+      return (m[k] || []).length;
+    });
+  }
   var s0 = ctx.series && (ctx.series.agg || ctx.series[op_order[0]]);
-  var hasDl = !!(s0 && s0.dl && Object.keys(s0.dl).some(function(a) {
-    return (s0.dl[a] || []).length;
-  }));
-  var hasRemote = !!(s0 && s0.rMean && Object.keys(s0.rMean).some(function(a) {
-    return (s0.rMean[a] || []).length;
-  }));
+  var hasDl = !!(s0 && anyPts(s0.dl));
+  var hasRemote = !!(s0 && anyPts(s0.rMean));
   var dltbl = download_tables(ctx);
   var hasRestore = hasDl || dltbl || hasRemote;
+  var hasLat = op_order.some(function(op) {
+    var s = ctx.series && ctx.series[op];
+    return !!s && (anyPts(s.el) || anyPts(s.qpEl));
+  });
   var globalCtrls = "<span class='seg'><button data-xmode='elapsed' class='on'>elapsed</button><button data-xmode='pct'>% downloaded</button></span>";
   if (multiRun) globalCtrls += "<span class='seg'><button data-plot='avg' class='on'>summary</button><button data-plot='all'>runs</button></span>";
   globalCtrls += "<button class='unzoom' data-unzoom title='reset zoom (or press Esc)' aria-label='reset zoom'>⤢</button>";
@@ -1980,23 +1985,25 @@ function render_body(ctx) {
     if (op === "agg") return "Overall Workload Latency";
     return op[0].toUpperCase() + op.slice(1) + " Transaction Latency";
   }
-  A.push("<hr class='sec-sep'>");
-  A.push("<div class='ctrl header stick stick-latency'><span class='htitle'>Workload Latency</span><span class='seg'>");
-  A.push("<button data-pct='p50' class='on'>p50</button>");
-  A.push("<button data-pct='p95'>p95</button>");
-  A.push("<button data-pct='p99' class='on'>p99</button>");
-  A.push("<button data-qps>tps</button></span>");
-  A.push("<span class='seg'>");
-  A.push("<button data-scale='linear' class='on'>linear</button>");
-  A.push("<button data-scale='log'>log</button></span>");
-  if (!hasRestore) A.push(globalCtrls);
-  A.push("</div>");
-  op_order.forEach(function(op) {
-    var big = op === "agg";
-    A.push("<h3>" + esc(op_heading(op)) + "</h3>");
-    A.push("<div class='chart' data-op='" + esc(op) + "' data-big='" + (big ? 1 : 0) + "'>" + bake_svg(op, ctx.series[op]) + "</div>");
-    A.push("<div class='optbl' data-op='" + esc(op) + "'>" + op_time_table(op, ctx.series[op], ctx.armKeys, ctx.labels, ctx.timeRows) + "</div>");
-  });
+  if (hasLat) {
+    A.push("<hr class='sec-sep'>");
+    A.push("<div class='ctrl header stick stick-latency'><span class='htitle'>Workload Latency</span><span class='seg'>");
+    A.push("<button data-pct='p50' class='on'>p50</button>");
+    A.push("<button data-pct='p95'>p95</button>");
+    A.push("<button data-pct='p99' class='on'>p99</button>");
+    A.push("<button data-qps>tps</button></span>");
+    A.push("<span class='seg'>");
+    A.push("<button data-scale='linear' class='on'>linear</button>");
+    A.push("<button data-scale='log'>log</button></span>");
+    if (!hasRestore) A.push(globalCtrls);
+    A.push("</div>");
+    op_order.forEach(function(op) {
+      var big = op === "agg";
+      A.push("<h3>" + esc(op_heading(op)) + "</h3>");
+      A.push("<div class='chart' data-op='" + esc(op) + "' data-big='" + (big ? 1 : 0) + "'>" + bake_svg(op, ctx.series[op]) + "</div>");
+      A.push("<div class='optbl' data-op='" + esc(op) + "'>" + op_time_table(op, ctx.series[op], ctx.armKeys, ctx.labels, ctx.timeRows) + "</div>");
+    });
+  }
   A.push("</div>");
   A.push("</div>");
   return A.join("");

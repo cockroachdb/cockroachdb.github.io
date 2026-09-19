@@ -230,3 +230,42 @@ export function soloArmsNew() { return [newArm(SOLO)]; }
 // Flat run lists (v:2 bodies WITH metadata) — the {runs} payload the app/tests ingest.
 export function dualRuns() { return armRuns(A).concat(armRuns(B)); }
 export function soloRuns() { return armRuns(SOLO); }
+
+// A WORKLOAD-FREE run: the full restore side, `ops: {}` — what a producer that drives no
+// foreground workload emits (summary_report_spec.md §1). The download idles at 0% while the
+// restore links its files in, then climbs to 100% at el=900 and holds; `timings` reports the
+// data available only at completion, so `available` == `restored` and the two degraded
+// thresholds in between never apply.
+const WF_NODES = 5;
+const WF_PER_NODE_MB = 40000;                                  // 40 GB/node -> 200 GB restored
+const WF_START = 120, WF_DONE = 900;                           // seconds: first byte / 100%
+export function workloadFreeRun() {
+  const els: number[] = [];
+  for (let el = 0; el <= 1200; el += 30) els.push(el);
+  const done = (el: number) => Math.max(0, Math.min(1, (el - WF_START) / (WF_DONE - WF_START)));
+  const active = (el: number) => el > WF_START && el <= WF_DONE;
+  const node_remote_mb: number[][] = [];
+  // Proportional per-node spread, so the across-node max−min the distribution chart plots
+  // peaks mid-download and drains to 0 with everything else.
+  for (let n = 0; n < WF_NODES; n++)
+    node_remote_mb.push(els.map((el) => +(WF_PER_NODE_MB * (1 + 0.06 * (n - 2)) * (1 - done(el))).toFixed(1)));
+  return {
+    v: 2,
+    metadata: {
+      test: "restore/online/nodes=5/cpus=8", timestamp: "260301-091500",
+      version: "0f1e2d3c4b5a6978", settings: {},
+      total_bytes: WF_NODES * WF_PER_NODE_MB * 1024 * 1024,
+    },
+    elapsed: els,
+    // Available only once the restore finished; nothing was usable (or measurable) before.
+    timings: { available: WF_DONE, functional: null, healthy: null, restored: WF_DONE },
+    download: {
+      // The producer's % denominator is a running maximum, so the pre-download stretch reads 0.
+      pct: els.map((el) => +(100 * done(el)).toFixed(1)),
+      // `null`, not 0: outside the download there is no rate reading at all.
+      mbps: els.map((el, i) => (active(el) ? +(WF_PER_NODE_MB / (WF_DONE - WF_START) + (i % 5) - 2).toFixed(2) : null)),
+      node_remote_mb,
+    },
+    ops: {},
+  };
+}
