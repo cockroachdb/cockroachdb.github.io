@@ -4,7 +4,6 @@
 // Either half is omitted when the run set carries no series for it — see hasRestore / hasLat.
 import { esc } from "../format/format";
 import { prov_table, op_time_table, download_tables } from "./tables";
-import { bake_svg } from "./svg";
 
 function render_body(ctx){
   var dual = ctx.dual, cl = ctx.control_label, el = ctx.experiment_label;
@@ -110,8 +109,8 @@ function render_body(ctx){
     op_order.forEach(function(op){
       var big = (op === "agg");
       A.push("<h3>"+esc(op_heading(op))+"</h3>");
-      A.push("<div class='chart' data-op='"+esc(op)+"' data-big='"+(big?1:0)+"'>"
-        + bake_svg(op, ctx.series[op], big) + "</div>");
+      // Empty host: the chart layer finds it by this selector and fills it in (chart.ts redraw).
+      A.push("<div class='chart' data-op='"+esc(op)+"' data-big='"+(big?1:0)+"'></div>");
       A.push("<div class='optbl' data-op='"+esc(op)+"'>"+op_time_table(op, ctx.series[op], ctx.armKeys, ctx.labels, ctx.timeRows)+"</div>");
     });
   }

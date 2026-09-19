@@ -11,8 +11,6 @@ import { dualArms, soloArms, dualArmsNew, soloArmsNew } from "./fixture";
 const require = createRequire(import.meta.url);
 const OLD = require("./golden/core.reference.cjs");
 
-const OPS = ["agg", "stockLevel", "orderStatus", "delivery", "newOrder", "payment"];
-
 // Keys the frozen OLD oracle can't track (display/serialization or intentionally-redefined):
 //   runs/perRun/prov_details — see note in the ctx test below
 //   rRatio* — node-skew ratio, intentionally redefined to (max−min)/baseline-mean (was the OLD
@@ -71,13 +69,10 @@ function checkCatalog(name: string, makeOld: () => any[], makeNew: () => any[]) 
       expect(JSON.stringify(disk.map(newMb))).toEqual(JSON.stringify(oldCtx.mbps_rows.map(oldMb)));
     });
 
-    // NOTE: the HTML render generators (render_body, tables, bake_svg) are intentionally NO
-    // LONGER compared to the original — the report's layout/controls/labels are being actively
+    // NOTE: the HTML render generators (render_body, tables) are intentionally NO LONGER
+    // compared to the original — the report's layout/controls/labels are being actively
     // redesigned. Compute fidelity (analyze() ctx + data_json() above) is the durable invariant
     // this test guards; render output is covered behaviorally by smoke/hover/gestures/sticky.
-    it("bake_svg() runs for every op (no throw)", () => {
-      for (const op of OPS) expect(typeof NEW.CORE.bake_svg(op, newCtx.series[op], op === "agg")).toBe("string");
-    });
   });
 }
 

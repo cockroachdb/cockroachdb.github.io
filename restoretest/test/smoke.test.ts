@@ -38,8 +38,8 @@ const BUILT = "file://" + resolve(HERE, "../index.html");
     await page.goto(BUILT + "#" + payload, { waitUntil: "load" });
     await page.waitForSelector(".report", { timeout: 5000 });
 
-    // render_body ran (details/tables), and the interactive chart ran (.scrubhit is only
-    // emitted by __runChart, not the static baked SVG).
+    // render_body ran (details/tables), and the interactive chart ran: render_body emits the
+    // op charts as empty hosts, so any .chart svg at all is the chart layer's.
     const counts = await page.evaluate(() => ({
       report: document.querySelectorAll(".report").length,
       tables: document.querySelectorAll("table.tbl").length,
